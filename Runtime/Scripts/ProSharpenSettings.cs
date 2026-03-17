@@ -13,7 +13,9 @@ namespace LLCheesell.ProSharpen
         /// <summary>Unsharp Mask - classic photographic sharpening with fine control.</summary>
         UnsharpMask = 1,
         /// <summary>Adaptive Sharpening - context-aware with edge protection. Highest quality.</summary>
-        Adaptive = 2
+        Adaptive = 2,
+        /// <summary>Robust CAS (FSR RCAS) - mathematically optimal sharpening with noise awareness.</summary>
+        RCAS = 3
     }
 
     /// <summary>
@@ -58,6 +60,7 @@ namespace LLCheesell.ProSharpen
         public const string KeywordCAS = "PROSHARPEN_CAS";
         public const string KeywordUnsharp = "PROSHARPEN_UNSHARP";
         public const string KeywordAdaptive = "PROSHARPEN_ADAPTIVE";
+        public const string KeywordRCAS = "PROSHARPEN_RCAS";
         public const string KeywordHighQuality = "PROSHARPEN_HIGH_QUALITY";
         public const string KeywordLumaOnly = "PROSHARPEN_LUMA_ONLY";
         public const string KeywordDepthAware = "PROSHARPEN_DEPTH_AWARE";
@@ -80,6 +83,7 @@ namespace LLCheesell.ProSharpen
             SetKeyword(material, ProSharpenShaderConstants.KeywordCAS, mode == SharpenMode.CAS);
             SetKeyword(material, ProSharpenShaderConstants.KeywordUnsharp, mode == SharpenMode.UnsharpMask);
             SetKeyword(material, ProSharpenShaderConstants.KeywordAdaptive, mode == SharpenMode.Adaptive);
+            SetKeyword(material, ProSharpenShaderConstants.KeywordRCAS, mode == SharpenMode.RCAS);
 
             // Quality
             SetKeyword(material, ProSharpenShaderConstants.KeywordHighQuality, quality == SharpenQuality.High);

@@ -87,7 +87,7 @@ namespace LLCheesell.ProSharpen
 
         Material _material;
 
-        public bool IsActive() => enabled.value && intensity.value > 0f;
+        public bool IsActive() => _material != null && enabled.value && intensity.value > 0f;
 
         public override CustomPostProcessInjectionPoint injectionPoint =>
             CustomPostProcessInjectionPoint.AfterPostProcess;

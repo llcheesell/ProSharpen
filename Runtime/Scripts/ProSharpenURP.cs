@@ -2,6 +2,9 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+#if PROSHARPEN_UNITY6
+using UnityEngine.Rendering.RenderGraphModule;
+#endif
 
 namespace LLCheesell.ProSharpen
 {
@@ -110,10 +113,15 @@ namespace LLCheesell.ProSharpen
         public RenderPassEvent renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
 
         ProSharpenRenderPass _renderPass;
+        Material _material;
 
         public override void Create()
         {
-            _renderPass = new ProSharpenRenderPass
+            var shader = Shader.Find(ProSharpenShaderConstants.ShaderName);
+            if (shader != null)
+                _material = CoreUtils.CreateEngineMaterial(shader);
+
+            _renderPass = new ProSharpenRenderPass(_material)
             {
                 renderPassEvent = renderPassEvent
             };
@@ -121,97 +129,147 @@ namespace LLCheesell.ProSharpen
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
-            if (renderingData.cameraData.postProcessEnabled)
+            if (renderingData.cameraData.cameraType != CameraType.Game)
+                return;
+
+            if (!renderingData.cameraData.postProcessEnabled)
+                return;
+
+            var volume = VolumeManager.instance.stack.GetComponent<ProSharpenVolumeURP>();
+            if (volume == null || !volume.IsActive())
+                return;
+
+            renderer.EnqueuePass(_renderPass);
+        }
+
+        // URP 14+ requirement: access render targets here, not in AddRenderPasses
+        public override void SetupRenderPasses(ScriptableRenderer renderer, in RenderingData renderingData)
+        {
+            if (renderingData.cameraData.cameraType == CameraType.Game)
             {
-                var volume = VolumeManager.instance.stack.GetComponent<ProSharpenVolumeURP>();
-                if (volume != null && volume.IsActive())
-                {
-                    renderer.EnqueuePass(_renderPass);
-                }
+                _renderPass.ConfigureInput(ScriptableRenderPassInput.Color);
+                if (VolumeManager.instance.stack.GetComponent<ProSharpenVolumeURP>()?.depthAware.value == true)
+                    _renderPass.ConfigureInput(ScriptableRenderPassInput.Color | ScriptableRenderPassInput.Depth);
+
+                _renderPass.SetTarget(renderer.cameraColorTargetHandle);
             }
         }
 
         protected override void Dispose(bool disposing)
         {
             _renderPass?.Dispose();
+            CoreUtils.Destroy(_material);
         }
     }
 
     /// <summary>
     /// URP Render Pass that executes the sharpening shader.
+    /// Implements both Execute (Compatibility Mode) and RecordRenderGraph (Unity 6+).
     /// </summary>
     sealed class ProSharpenRenderPass : ScriptableRenderPass, System.IDisposable
     {
         const string ProfilerTag = "ProSharpen";
+        static readonly ProfilingSampler _profilingSampler = new ProfilingSampler(ProfilerTag);
 
         Material _material;
         RTHandle _tempRT;
+        RTHandle _cameraColorTarget;
 
-        Material GetMaterial()
+        public ProSharpenRenderPass(Material material)
         {
-            if (_material == null)
+            _material = material;
+        }
+
+        public void SetTarget(RTHandle colorTarget)
+        {
+            _cameraColorTarget = colorTarget;
+        }
+
+        void ConfigureMaterial(ProSharpenVolumeURP volume)
+        {
+            if (_material == null) return;
+
+            ProSharpenMaterialSetup.SetKeywords(_material,
+                volume.mode.value, volume.quality.value, volume.lumaOnly.value,
+                volume.depthAware.value, volume.motionAware.value, volume.maskEnabled.value);
+
+            ProSharpenMaterialSetup.SetProperties(_material,
+                volume.intensity.value, volume.sharpness.value, volume.edgeProtection.value,
+                volume.detailBoost.value, volume.noiseThreshold.value, volume.clampLimit.value,
+                volume.cornerWeight.value);
+
+            if (volume.depthAware.value)
             {
-                var shader = Shader.Find(ProSharpenShaderConstants.ShaderName);
-                if (shader != null)
-                    _material = CoreUtils.CreateEngineMaterial(shader);
+                ProSharpenMaterialSetup.SetDepthProperties(_material,
+                    volume.depthNearStrength.value, volume.depthFarStrength.value,
+                    volume.depthNearPlane.value, volume.depthFarPlane.value);
             }
-            return _material;
+
+            if (volume.motionAware.value)
+            {
+                ProSharpenMaterialSetup.SetMotionProperties(_material,
+                    volume.motionThreshold.value, volume.motionReduction.value);
+            }
+
+            if (volume.maskEnabled.value && volume.maskTexture.value != null)
+            {
+                _material.SetTexture(ProSharpenShaderConstants.MaskTexId, volume.maskTexture.value);
+            }
         }
 
 #if PROSHARPEN_UNITY6
-        // Unity 6+ uses Render Graph API
-        public override void RecordRenderGraph(UnityEngine.Rendering.RenderGraphModule.RenderGraph renderGraph,
-            ContextContainer frameData)
+        // ====================================================================
+        // Unity 6+ Render Graph path
+        // ====================================================================
+        class PassData
         {
-            var material = GetMaterial();
-            if (material == null) return;
+            public TextureHandle source;
+            public Material material;
+        }
+
+        public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
+        {
+            if (_material == null) return;
 
             var volume = VolumeManager.instance.stack.GetComponent<ProSharpenVolumeURP>();
             if (volume == null || !volume.IsActive()) return;
 
-            var resourceData = frameData.Get<UniversalResourceData>();
-            var cameraColorHandle = resourceData.activeColorTexture;
+            ConfigureMaterial(volume);
 
-            var desc = renderGraph.GetTextureDesc(cameraColorHandle);
+            var resourceData = frameData.Get<UniversalResourceData>();
+            var sourceHandle = resourceData.activeColorTexture;
+
+            if (!sourceHandle.IsValid()) return;
+
+            // Create temporary texture matching camera color
+            var desc = renderGraph.GetTextureDesc(sourceHandle);
             desc.name = "_ProSharpenTemp";
             var tempHandle = renderGraph.CreateTexture(desc);
 
-            ConfigureMaterial(material, volume);
-
-            // Copy source to temp, apply sharpen from temp to destination
+            // Pass 1: Sharpen source -> temp
             using (var builder = renderGraph.AddRasterRenderPass<PassData>(ProfilerTag, out var passData))
             {
-                passData.source = cameraColorHandle;
-                passData.material = material;
-                builder.UseTexture(cameraColorHandle, UnityEngine.Rendering.RenderGraphModule.AccessFlags.Read);
+                passData.source = sourceHandle;
+                passData.material = _material;
+                builder.UseTexture(sourceHandle);
                 builder.SetRenderAttachment(tempHandle, 0);
-                builder.SetRenderFunc((PassData data, UnityEngine.Rendering.RenderGraphModule.RasterGraphContext ctx) =>
+                builder.AllowPassCulling(false);
+
+                builder.SetRenderFunc(static (PassData data, RasterGraphContext ctx) =>
                 {
-                    data.material.SetTexture(ProSharpenShaderConstants.MainTexId, data.source);
-                    Blitter.BlitTexture(ctx.cmd, data.source, new Vector4(1, 1, 0, 0), data.material, 0);
+                    Blitter.BlitTexture(ctx.cmd, data.source,
+                        new Vector4(1, 1, 0, 0), data.material, 0);
                 });
             }
 
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>(ProfilerTag + "_Copy", out var passData))
-            {
-                passData.source = tempHandle;
-                passData.material = null;
-                builder.UseTexture(tempHandle, UnityEngine.Rendering.RenderGraphModule.AccessFlags.Read);
-                builder.SetRenderAttachment(cameraColorHandle, 0);
-                builder.SetRenderFunc((PassData data, UnityEngine.Rendering.RenderGraphModule.RasterGraphContext ctx) =>
-                {
-                    Blitter.BlitTexture(ctx.cmd, data.source, new Vector4(1, 1, 0, 0), 0, false);
-                });
-            }
+            // Swap: set temp as the new camera color
+            resourceData.cameraColor = tempHandle;
         }
+#endif
 
-        class PassData
-        {
-            public UnityEngine.Rendering.RenderGraphModule.TextureHandle source;
-            public Material material;
-        }
-#else
-        // Legacy path for Unity 2022.3 - 2023.x
+        // ====================================================================
+        // Compatibility Mode path (Unity 2022.3 - 2023.x, or Unity 6 compat)
+        // ====================================================================
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
             var desc = renderingData.cameraData.cameraTargetDescriptor;
@@ -222,60 +280,29 @@ namespace LLCheesell.ProSharpen
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
-            var material = GetMaterial();
-            if (material == null) return;
+            if (_material == null) return;
 
             var volume = VolumeManager.instance.stack.GetComponent<ProSharpenVolumeURP>();
             if (volume == null || !volume.IsActive()) return;
 
-            ConfigureMaterial(material, volume);
+            ConfigureMaterial(volume);
 
             var cmd = CommandBufferPool.Get(ProfilerTag);
-            var cameraColorTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
-
-            // Blit source -> temp with sharpen, then temp -> source
-            Blitter.BlitCameraTexture(cmd, cameraColorTarget, _tempRT, material, 0);
-            Blitter.BlitCameraTexture(cmd, _tempRT, cameraColorTarget);
+            using (new ProfilingScope(cmd, _profilingSampler))
+            {
+                // Blit source -> temp with sharpen, then temp -> source
+                Blitter.BlitCameraTexture(cmd, _cameraColorTarget, _tempRT, _material, 0);
+                Blitter.BlitCameraTexture(cmd, _tempRT, _cameraColorTarget);
+            }
 
             context.ExecuteCommandBuffer(cmd);
+            cmd.Clear();
             CommandBufferPool.Release(cmd);
-        }
-#endif
-
-        void ConfigureMaterial(Material material, ProSharpenVolumeURP volume)
-        {
-            ProSharpenMaterialSetup.SetKeywords(material,
-                volume.mode.value, volume.quality.value, volume.lumaOnly.value,
-                volume.depthAware.value, volume.motionAware.value, volume.maskEnabled.value);
-
-            ProSharpenMaterialSetup.SetProperties(material,
-                volume.intensity.value, volume.sharpness.value, volume.edgeProtection.value,
-                volume.detailBoost.value, volume.noiseThreshold.value, volume.clampLimit.value,
-                volume.cornerWeight.value);
-
-            if (volume.depthAware.value)
-            {
-                ProSharpenMaterialSetup.SetDepthProperties(material,
-                    volume.depthNearStrength.value, volume.depthFarStrength.value,
-                    volume.depthNearPlane.value, volume.depthFarPlane.value);
-            }
-
-            if (volume.motionAware.value)
-            {
-                ProSharpenMaterialSetup.SetMotionProperties(material,
-                    volume.motionThreshold.value, volume.motionReduction.value);
-            }
-
-            if (volume.maskEnabled.value && volume.maskTexture.value != null)
-            {
-                material.SetTexture(ProSharpenShaderConstants.MaskTexId, volume.maskTexture.value);
-            }
         }
 
         public void Dispose()
         {
             _tempRT?.Release();
-            CoreUtils.Destroy(_material);
         }
     }
 }

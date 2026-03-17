@@ -1,0 +1,31 @@
+{
+  "name": "com.llcheesell.prosharpen.HDRP.Runtime",
+  "rootNamespace": "LLCheesell.ProSharpen",
+  "references": [
+    "com.llcheesell.prosharpen.Runtime",
+    "Unity.RenderPipelines.Core.Runtime",
+    "Unity.RenderPipelines.HighDefinition.Runtime"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "PROSHARPEN_HDRP"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.render-pipelines.high-definition",
+      "expression": "14.0.0",
+      "define": "PROSHARPEN_HDRP"
+    },
+    {
+      "name": "com.unity.render-pipelines.core",
+      "expression": "17.0.0",
+      "define": "PROSHARPEN_UNITY6"
+    }
+  ],
+  "noEngineReferences": false
+}

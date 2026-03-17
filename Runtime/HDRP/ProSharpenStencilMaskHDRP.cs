@@ -1,6 +1,7 @@
 #if PROSHARPEN_HDRP
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.RendererUtils;
 using UnityEngine.Rendering.HighDefinition;
 
 namespace LLCheesell.ProSharpen

@@ -70,6 +70,27 @@ namespace LLCheesell.ProSharpen.Editor
             public static readonly GUIContent MaskTextureLabel = new GUIContent("Mask Texture",
                 "Grayscale mask: White = full sharpening, Black = no sharpening");
         }
+
+        /// <summary>
+        /// Returns true if EdgeProtection should be visible for the given mode.
+        /// </summary>
+        public static bool IsEdgeProtectionVisible(SharpenMode mode) => mode == SharpenMode.Adaptive;
+
+        /// <summary>
+        /// Returns true if DetailBoost should be visible for the given mode.
+        /// </summary>
+        public static bool IsDetailBoostVisible(SharpenMode mode) => mode == SharpenMode.Adaptive;
+
+        /// <summary>
+        /// Returns true if NoiseThreshold should be visible for the given mode.
+        /// </summary>
+        public static bool IsNoiseThresholdVisible(SharpenMode mode) => mode == SharpenMode.UnsharpMask;
+
+        /// <summary>
+        /// Returns true if CornerWeight should be visible for the given mode and quality.
+        /// </summary>
+        public static bool IsCornerWeightVisible(SharpenMode mode, SharpenQuality quality) =>
+            mode == SharpenMode.CAS && quality == SharpenQuality.High;
     }
 }
 #endif

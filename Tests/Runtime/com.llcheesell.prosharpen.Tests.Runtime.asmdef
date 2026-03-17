@@ -1,0 +1,20 @@
+{
+  "name": "com.llcheesell.prosharpen.Tests.Runtime",
+  "rootNamespace": "LLCheesell.ProSharpen.Tests.Runtime",
+  "references": [
+    "com.llcheesell.prosharpen.Runtime"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

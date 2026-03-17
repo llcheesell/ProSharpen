@@ -1,0 +1,39 @@
+{
+  "name": "com.llcheesell.prosharpen",
+  "version": "0.1.0",
+  "displayName": "ProSharpen",
+  "description": "Professional-grade sharpening post-process for HDRP and URP. Features Contrast Adaptive Sharpening (CAS), Unsharp Mask, and advanced edge-aware sharpening with layer masking support.",
+  "unity": "2022.3",
+  "unityRelease": "0f1",
+  "documentationUrl": "",
+  "changelogUrl": "",
+  "licensesUrl": "",
+  "keywords": [
+    "sharpen",
+    "sharpening",
+    "post-process",
+    "post-processing",
+    "hdrp",
+    "urp",
+    "cas",
+    "image-quality"
+  ],
+  "author": {
+    "name": "LLCheesell",
+    "url": ""
+  },
+  "license": "MIT",
+  "type": "library",
+  "samples": [
+    {
+      "displayName": "HDRP Sample Scene",
+      "description": "Example HDRP scene with ProSharpen configured",
+      "path": "Samples~/HDRP"
+    },
+    {
+      "displayName": "URP Sample Scene",
+      "description": "Example URP scene with ProSharpen configured",
+      "path": "Samples~/URP"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "com.llcheesell.prosharpen.Tests.Editor",
+  "rootNamespace": "LLCheesell.ProSharpen.Tests.Editor",
+  "references": [
+    "com.llcheesell.prosharpen.Runtime",
+    "com.llcheesell.prosharpen.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

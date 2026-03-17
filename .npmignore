@@ -1,0 +1,8 @@
+# Exclude from Unity Package distribution
+Documents/
+Documents.meta
+.github/
+*.md
+!package.json
+!CHANGELOG.md
+!LICENSE

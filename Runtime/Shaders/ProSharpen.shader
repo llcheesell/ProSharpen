@@ -55,7 +55,12 @@ Shader "Hidden/ProSharpen/ProSharpen"
             }
             #elif defined(PROSHARPEN_UNSHARP)
             {
-                float3 blurred = GaussianBlur3x3(a, b, c, d, e, f, g, h, i);
+                #if defined(PROSHARPEN_HIGH_QUALITY)
+                    // High Quality: wider box blur for larger detail signal
+                    float3 blurred = GaussianBlurWide3x3(a, b, c, d, e, f, g, h, i);
+                #else
+                    float3 blurred = GaussianBlur3x3(a, b, c, d, e, f, g, h, i);
+                #endif
                 #if defined(PROSHARPEN_LUMA_ONLY)
                     result = ApplyUnsharpMaskLuma(e, blurred, _Sharpness, _NoiseThreshold, _ClampLimit);
                 #else
@@ -70,9 +75,9 @@ Shader "Hidden/ProSharpen/ProSharpen"
             #elif defined(PROSHARPEN_RCAS)
             {
                 #if defined(PROSHARPEN_HIGH_QUALITY)
-                    result = ApplyRCASHighQuality(a, b, c, d, e, f, g, h, i, _Sharpness);
+                    result = ApplyRCASHighQuality(a, b, c, d, e, f, g, h, i, _Sharpness, _NoiseThreshold);
                 #else
-                    result = ApplyRCAS(b, d, e, f, h, _Sharpness);
+                    result = ApplyRCAS(b, d, e, f, h, _Sharpness, _NoiseThreshold);
                 #endif
             }
             #endif
@@ -166,7 +171,8 @@ Shader "Hidden/ProSharpen/ProSharpen"
                 // Depth-aware modulation
                 #ifdef PROSHARPEN_DEPTH_AWARE
                 {
-                    uint2 positionSS = input.texcoord * _ScreenSize.xy;
+                    // Use scaled UV for screen-space position to match DLSS/DRS
+                    uint2 positionSS = uv * _ScreenSize.xy;
                     float depth = LoadCameraDepth(positionSS);
                     float linearDepth = LinearEyeDepth(depth, _ZBufferParams);
                     float normalizedDepth = saturate((linearDepth - _DepthNearPlane) / (_DepthFarPlane - _DepthNearPlane + 0.001));
@@ -179,10 +185,16 @@ Shader "Hidden/ProSharpen/ProSharpen"
                 // Motion-aware modulation (TAA/DLSS recovery)
                 #ifdef PROSHARPEN_MOTION_AWARE
                 {
-                    uint2 positionSS = input.texcoord * _ScreenSize.xy;
+                    // Use the same scaled UV as color sampling to avoid coordinate mismatch
+                    uint2 positionSS = uv * _ScreenSize.xy;
                     float2 motionVec = LOAD_TEXTURE2D_X(_CameraMotionVectorsTexture, positionSS).xy;
-                    float motionFactor = MotionSharpenFactor(motionVec, _MotionThreshold, _MotionReduction);
-                    result = lerp(e, result, motionFactor);
+                    // Validate motion vector: reject obviously invalid data
+                    float motionMag = length(motionVec);
+                    if (motionMag < 10.0) // reject garbage values (>10 is clearly invalid)
+                    {
+                        float motionFactor = MotionSharpenFactor(motionVec, _MotionThreshold, _MotionReduction);
+                        result = lerp(e, result, motionFactor);
+                    }
                 }
                 #endif
 

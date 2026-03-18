@@ -100,7 +100,8 @@ namespace LLCheesell.ProSharpen.Editor
             if (IsNoiseThresholdVisible(mode))
                 PropertyField(_noiseThreshold, NoiseThresholdLabel);
 
-            PropertyField(_clampLimit, ClampLimitLabel);
+            if (IsClampLimitVisible(mode))
+                PropertyField(_clampLimit, ClampLimitLabel);
 
             if (IsCornerWeightVisible(mode, quality))
                 PropertyField(_cornerWeight, CornerWeightLabel);

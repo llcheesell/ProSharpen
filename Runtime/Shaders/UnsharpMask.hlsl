@@ -10,9 +10,18 @@
 //   - Edge-aware clamping to prevent halo artifacts
 //   - Soft clamping for natural falloff
 //   - Threshold to avoid amplifying noise
+//
+// Note: User-facing Sharpness [0,1] is remapped internally to [0, 2.5]
+// to provide a perceptually meaningful range.
 // ============================================================================
 
 #include "ProSharpenCommon.hlsl"
+
+// Remap user sharpness [0, 1] to USM-appropriate amount [0, 2.5]
+float USMRemapAmount(float sharpness)
+{
+    return sharpness * 2.5;
+}
 
 // Gaussian-approximated blur using a 3x3 kernel
 // Weights approximate a sigma ~0.85 Gaussian
@@ -28,46 +37,29 @@ float3 GaussianBlur3x3(float3 a, float3 b, float3 c,
           + 4.0 * e) / 16.0;
 }
 
-// 5x5 Gaussian approximation using two-pass 3x3
-// For higher quality mode - uses wider neighborhood
-float3 GaussianBlur5x5Approx(
-    float3 samples[25], // 5x5 neighborhood, row-major
-    float sigma)
+// Wider blur approximation for High Quality mode
+// Uses 3x3 kernel with box-blur weighting for a broader spread
+// Effectively approximates a ~5-texel-diameter blur from 9 taps
+float3 GaussianBlurWide3x3(float3 a, float3 b, float3 c,
+                           float3 d, float3 e, float3 f,
+                           float3 g, float3 h, float3 i)
 {
-    // Compute Gaussian weights for 5x5 kernel
-    float weights[25];
-    float totalWeight = 0.0;
-    float invTwoSigmaSq = 1.0 / (2.0 * sigma * sigma);
-
-    [unroll]
-    for (int y = -2; y <= 2; y++)
-    {
-        [unroll]
-        for (int x = -2; x <= 2; x++)
-        {
-            int idx = (y + 2) * 5 + (x + 2);
-            float dist2 = float(x * x + y * y);
-            weights[idx] = exp(-dist2 * invTwoSigmaSq);
-            totalWeight += weights[idx];
-        }
-    }
-
-    float3 result = float3(0, 0, 0);
-    [unroll]
-    for (int j = 0; j < 25; j++)
-    {
-        result += samples[j] * (weights[j] / totalWeight);
-    }
-    return result;
+    // Equal weighting across 3x3 gives a wider effective blur
+    // (equivalent to box filter, ~sigma 1.5)
+    // This produces a larger detail signal than the Gaussian-weighted version
+    return (a + b + c + d + e + f + g + h + i) / 9.0;
 }
 
 // Apply Unsharp Mask with artifact prevention
-// amount: strength of sharpening (0-2 typical range)
+// amount: strength of sharpening (internally remapped from user [0,1])
 // threshold: minimum difference to sharpen (noise gate)
 // clampLimit: maximum adjustment to prevent halos
 float3 ApplyUnsharpMask(float3 original, float3 blurred,
                         float amount, float threshold, float clampLimit)
 {
+    // Remap to effective USM range
+    float effectiveAmount = USMRemapAmount(amount);
+
     // Compute the detail signal (high-pass)
     float3 detail = original - blurred;
 
@@ -76,7 +68,7 @@ float3 ApplyUnsharpMask(float3 original, float3 blurred,
     float thresholdMask = smoothstep(threshold * 0.5, threshold * 1.5, detailLum);
 
     // Apply amount with threshold gating
-    float3 sharpDetail = detail * amount * thresholdMask;
+    float3 sharpDetail = detail * effectiveAmount * thresholdMask;
 
     // Soft clamp to prevent halo artifacts
     sharpDetail = SoftClamp3(sharpDetail, clampLimit);
@@ -89,6 +81,8 @@ float3 ApplyUnsharpMask(float3 original, float3 blurred,
 float3 ApplyUnsharpMaskLuma(float3 original, float3 blurred,
                             float amount, float threshold, float clampLimit)
 {
+    float effectiveAmount = USMRemapAmount(amount);
+
     float lumOrig = Luminance709(original);
     float lumBlur = Luminance709(blurred);
 
@@ -98,17 +92,19 @@ float3 ApplyUnsharpMaskLuma(float3 original, float3 blurred,
     float thresholdMask = smoothstep(threshold * 0.5, threshold * 1.5, abs(detail));
 
     // Apply sharpening in luminance
-    float sharpDetail = detail * amount * thresholdMask;
+    float sharpDetail = detail * effectiveAmount * thresholdMask;
 
     // Soft clamp
     sharpDetail = SoftClamp(sharpDetail, clampLimit);
 
-    // Reconstruct: scale original color by luminance ratio
+    // Reconstruct: add detail uniformly (additive approach avoids color blow-out)
     float newLum = lumOrig + sharpDetail;
-    float3 result = original * (newLum / max(lumOrig, 1e-6));
+    // Clamp ratio to prevent extreme scaling on dark/bright pixels
+    float ratio = clamp(newLum / max(lumOrig, 1e-5), 0.5, 2.0);
+    float3 result = original * ratio;
 
-    // Handle near-black pixels where ratio would explode
-    result = lumOrig < 1e-6 ? original : result;
+    // Handle near-black pixels
+    result = lumOrig < 1e-5 ? original : result;
 
     return max(result, 0.0);
 }

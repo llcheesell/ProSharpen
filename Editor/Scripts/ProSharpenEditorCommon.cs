@@ -83,8 +83,17 @@ namespace LLCheesell.ProSharpen.Editor
 
         /// <summary>
         /// Returns true if NoiseThreshold should be visible for the given mode.
+        /// RCAS uses it for noise gate, USM uses it for detail thresholding.
         /// </summary>
-        public static bool IsNoiseThresholdVisible(SharpenMode mode) => mode == SharpenMode.UnsharpMask;
+        public static bool IsNoiseThresholdVisible(SharpenMode mode) =>
+            mode == SharpenMode.UnsharpMask || mode == SharpenMode.RCAS;
+
+        /// <summary>
+        /// Returns true if ClampLimit should be visible for the given mode.
+        /// Only USM uses SoftClamp with this parameter.
+        /// </summary>
+        public static bool IsClampLimitVisible(SharpenMode mode) =>
+            mode == SharpenMode.UnsharpMask;
 
         /// <summary>
         /// Returns true if CornerWeight should be visible for the given mode and quality.

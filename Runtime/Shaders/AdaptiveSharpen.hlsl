@@ -95,21 +95,19 @@ float3 ApplyAdaptiveSharpen(
     float sharpDetail = highPass * adaptiveStrength;
 
     // Soft clamp to prevent artifacts
-    float clampRange = 0.15 * intensity;
+    float clampRange = 0.1 * intensity;
     sharpDetail = SoftClamp(sharpDetail, clampRange);
 
-    // Apply in luminance space to preserve color
+    // Apply in luminance space with ratio clamping to prevent bloating
     float newLum = lumE + sharpDetail;
-    float3 result = e * (newLum / max(lumE, 1e-6));
-    result = lumE < 1e-6 ? e : result;
+    // Clamp the luminance ratio to prevent excessive brightening/darkening
+    float ratio = clamp(newLum / max(lumE, 1e-5), 0.75, 1.25);
+    float3 result = lumE < 1e-5 ? e : e * ratio;
 
-    // Neighborhood clamping as final safety net
+    // Strict neighborhood clamping (no overshoot margin to prevent "swollen" look)
     float3 minColor = min(e, min(min(b, d), min(f, h)));
     float3 maxColor = max(e, max(max(b, d), max(f, h)));
-
-    // Allow slight overshoot for detail recovery, but limit it
-    float3 margin = (maxColor - minColor) * 0.1;
-    result = clamp(result, minColor - margin, maxColor + margin);
+    result = clamp(result, minColor, maxColor);
 
     return max(result, 0.0);
 }

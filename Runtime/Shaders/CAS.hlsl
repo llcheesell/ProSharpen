@@ -52,18 +52,20 @@ float3 ApplyCAS(float3 a, float3 b, float3 c,
 
     // Compute the CAS filter weight
     // sharpness: 0.0 = no sharpening, 1.0 = maximum
-    // The negative lobe weight is derived from contrast headroom
-    float peak = -rcp(lerp(8.0, 5.0, saturate(sharpness)));
+    // Extended range: peak goes from -0.1 (gentle) to -0.25 (strong)
+    float peak = -rcp(lerp(10.0, 4.0, saturate(sharpness)));
     float w = contrast * peak;
 
     // Apply the filter: negative lobe on cross neighbors, positive on center
     // This is essentially an edge-preserving high-pass filter
     float3 result = (w * (b + d + f + h) + e) / (4.0 * w + 1.0);
 
-    // Clamp to local neighborhood to prevent ringing
+    // Neighborhood clamping with slight overshoot allowance for stronger effect
     float3 minColor = min(e, min(min(b, d), min(f, h)));
     float3 maxColor = max(e, max(max(b, d), max(f, h)));
-    result = clamp(result, minColor, maxColor);
+    float3 range = maxColor - minColor;
+    result = clamp(result, minColor - range * 0.05, maxColor + range * 0.05);
+    result = max(result, 0.0);
 
     return result;
 }
@@ -91,7 +93,7 @@ float3 ApplyCASHighQuality(float3 a, float3 b, float3 c,
                                 max(max(lumF, lumG), max(lumH, lumI))));
 
     float contrast = 1.0 - maxLum + minLum;
-    float peak = -rcp(lerp(8.0, 5.0, saturate(sharpness)));
+    float peak = -rcp(lerp(10.0, 4.0, saturate(sharpness)));
     float w = contrast * peak;
     float wCorner = w * cornerWeight;
 
@@ -99,10 +101,12 @@ float3 ApplyCASHighQuality(float3 a, float3 b, float3 c,
     float3 result = (w * (b + d + f + h) + wCorner * (a + c + g + i) + e)
                   / (4.0 * w + 4.0 * wCorner + 1.0);
 
-    // Neighborhood clamping
+    // Full neighborhood clamping with slight overshoot for stronger effect
     float3 minColor = min(e, min(min(min(a, b), min(c, d)), min(min(f, g), min(h, i))));
     float3 maxColor = max(e, max(max(max(a, b), max(c, d)), max(max(f, g), max(h, i))));
-    result = clamp(result, minColor, maxColor);
+    float3 range = maxColor - minColor;
+    result = clamp(result, minColor - range * 0.05, maxColor + range * 0.05);
+    result = max(result, 0.0);
 
     return result;
 }

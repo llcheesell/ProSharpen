@@ -1,0 +1,32 @@
+{
+  "name": "com.llcheesell.prosharpen.HDRP.Editor",
+  "rootNamespace": "LLCheesell.ProSharpen.Editor",
+  "references": [
+    "com.llcheesell.prosharpen.Runtime",
+    "com.llcheesell.prosharpen.HDRP.Runtime",
+    "com.llcheesell.prosharpen.Editor",
+    "Unity.RenderPipelines.Core.Runtime",
+    "Unity.RenderPipelines.Core.Editor",
+    "Unity.RenderPipelines.HighDefinition.Runtime",
+    "Unity.RenderPipelines.HighDefinition.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "PROSHARPEN_HDRP"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.render-pipelines.high-definition",
+      "expression": "14.0.0",
+      "define": "PROSHARPEN_HDRP"
+    }
+  ],
+  "noEngineReferences": false
+}

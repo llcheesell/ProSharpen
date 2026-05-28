@@ -1,0 +1,32 @@
+{
+  "name": "com.llcheesell.prosharpen.URP.Editor",
+  "rootNamespace": "LLCheesell.ProSharpen.Editor",
+  "references": [
+    "com.llcheesell.prosharpen.Runtime",
+    "com.llcheesell.prosharpen.URP.Runtime",
+    "com.llcheesell.prosharpen.Editor",
+    "Unity.RenderPipelines.Core.Runtime",
+    "Unity.RenderPipelines.Core.Editor",
+    "Unity.RenderPipelines.Universal.Runtime",
+    "Unity.RenderPipelines.Universal.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "PROSHARPEN_URP"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.render-pipelines.universal",
+      "expression": "14.0.0",
+      "define": "PROSHARPEN_URP"
+    }
+  ],
+  "noEngineReferences": false
+}

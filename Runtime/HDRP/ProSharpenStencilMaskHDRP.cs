@@ -76,7 +76,7 @@ namespace LLCheesell.ProSharpen
                 overrideMaterialPassIndex = 0
             };
 
-            CoreUtils.DrawRendererList(ctx.renderContext, ctx.cmd,
+            CoreUtils.DrawRendererList(ctx.cmd,
                 ctx.renderContext.CreateRendererList(result));
 
             // Set as global texture for the sharpen pass

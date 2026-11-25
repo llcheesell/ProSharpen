@@ -36,6 +36,10 @@ float4 ProSharpenApply(float2 uv, float2 texel, float strength)
 {
     float4 source = ProSharpenSampleSource(uv);
 
+    // マスクや深度連動でシャープ量が 0 の画素は、近傍を読まずに入力をそのまま返す
+    if (strength <= 0.0)
+        return source;
+
     #define PS_TAP(ox, oy) PSSignal(ProSharpenSampleSource(uv + float2(ox, oy) * texel).rgb)
 
     PS_SIGNAL e = PSSignal(source.rgb);
@@ -132,17 +136,22 @@ float4 ProSharpenApply(float2 uv, float2 texel, float strength)
 
     #undef PS_TAP
 
-    // ノイズゲート (coring): 局所コントラストがしきい値未満の平坦部はシャープしない
-#if !defined(PROSHARPEN_CAS)
+    // ノイズゲート (coring): 局所コントラストがしきい値未満の平坦部はシャープしない。
+    // CAS は低コントラストほど強く掛かるため、ゲートが無いと TAA / DLSS の微小な
+    // 時間ノイズを平坦部で増幅してしまう。しきい値 0 で無効 (AMD の CAS と同じ挙動)
     delta *= PSSoftGate(PSLuma(mx - mn), _NoiseThreshold);
-#endif
 
     // 強度を掛けてから、ハロー制限を行う
     delta *= strength;
     delta = PSLimitDelta(delta, e, mn, mx, _Overshoot, _Undershoot, _ClampLimit);
 
     // 知覚空間で加算し、リニアへ戻す。輝度のみの場合は RGB へ同じ量を加える
+#if defined(PROSHARPEN_LUMA_ONLY)
     float3 perceptual = sqrt(max(source.rgb, 0.0)) + delta;
+#else
+    // RGB 処理では e が既に知覚空間の中心画素なので、平方根を取り直さない
+    float3 perceptual = e + delta;
+#endif
     perceptual = max(perceptual, 0.0);
 
     // 変化のない画素 (マスク外など) は入力をそのまま返す。負値や丸め誤差を持ち込まない

@@ -24,6 +24,11 @@ namespace LLCheesell.ProSharpen.Editor
         SerializedDataParameter _noiseThreshold;
         SerializedDataParameter _clampLimit;
         SerializedDataParameter _cornerWeight;
+        SerializedDataParameter _radius;
+
+        // Halo Control
+        SerializedDataParameter _overshoot;
+        SerializedDataParameter _undershoot;
 
         // Depth-Aware
         SerializedDataParameter _depthAware;
@@ -58,6 +63,10 @@ namespace LLCheesell.ProSharpen.Editor
             _noiseThreshold = Unpack(o.Find("noiseThreshold"));
             _clampLimit = Unpack(o.Find("clampLimit"));
             _cornerWeight = Unpack(o.Find("cornerWeight"));
+            _radius = Unpack(o.Find("radius"));
+
+            _overshoot = Unpack(o.Find("overshoot"));
+            _undershoot = Unpack(o.Find("undershoot"));
 
             _depthAware = Unpack(o.Find("depthAware"));
             _depthNearStrength = Unpack(o.Find("depthNearStrength"));
@@ -103,6 +112,15 @@ namespace LLCheesell.ProSharpen.Editor
             if (IsCornerWeightVisible(mode, quality))
                 PropertyField(_cornerWeight, CornerWeightLabel);
 
+            if (IsRadiusVisible(mode))
+                PropertyField(_radius, RadiusLabel);
+
+            // Halo Control
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Halo Control", EditorStyles.boldLabel);
+            PropertyField(_overshoot, OvershootLabel);
+            PropertyField(_undershoot, UndershootLabel);
+
             // Depth-Aware
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Depth-Aware", EditorStyles.boldLabel);
@@ -119,19 +137,7 @@ namespace LLCheesell.ProSharpen.Editor
                 }
             }
 
-            // Motion-Aware
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("TAA/DLSS Recovery", EditorStyles.boldLabel);
-            PropertyField(_motionAware, MotionAwareLabel);
-
-            if (_motionAware.value.boolValue)
-            {
-                using (new EditorGUI.IndentLevelScope())
-                {
-                    PropertyField(_motionThreshold, MotionThresholdLabel);
-                    PropertyField(_motionReduction, MotionReductionLabel);
-                }
-            }
+            // モーション連動 (TAA/DLSS Recovery) は URP では未対応のため表示しない
 
             // Masking
             EditorGUILayout.Space();

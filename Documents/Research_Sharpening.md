@@ -256,3 +256,45 @@ is not necessary as even the most expensive variant takes < 0.5ms.
 6. **LumaSharpen** — CeeJay.dk, ReShade shader collection.
 7. **AdaptiveSharpen** — Tuukka Korhonen, ReShade shader collection.
 8. **ACES Sharpening** — Academy Color Encoding System reference implementation.
+
+---
+
+## 追加調査 (2026-11) — 実装へ反映した知見
+
+一次ソース（公式ソースコード）を確認できたものだけを記載する。
+
+### CAS / RCAS の正確な仕様
+- CAS (`ffx_cas.h`): `amp = sqrt(saturate(min(mn, 1 - mx) / mx))`、"better diagonals" 有効時は十字と 3x3 の min/max を加算し白の基準が 2.0 になる。`peak = -1 / lerp(8, 5, sharpness)`。
+  - 入力は 0〜1 の**リニア**が前提。ヘッダに "Running CAS on perceptual inputs will yield over-sharpening" とある。
+- RCAS (`ffx_fsr1.h`): `hitMin = min(mn4, e) / (4 * mx4)`、`hitMax = (1 - max(mx4, e)) / (4 * mn4 - 4)`、`lobe = max(-FSR_RCAS_LIMIT, min(max3(lobe), 0)) * sharp`、`FSR_RCAS_LIMIT = 0.25 - 1/16`。
+  - denoise: `nz = saturate(abs(0.25 * (b+d+f+h) - e) / (max5 - min5))`、`lobe *= 1 - 0.5 * nz`。
+  - FSR2 / FSR3 でも RCAS 本体は同じで、露出の前後処理だけが追加されている。
+- 出典:
+  - https://github.com/GPUOpen-Effects/FidelityFX-CAS/blob/master/ffx-cas/ffx_cas.h
+  - https://github.com/GPUOpen-Effects/FidelityFX-FSR/blob/master/ffx-fsr/ffx_fsr1.h
+  - https://github.com/GPUOpen-Effects/FidelityFX-FSR2/blob/master/src/ffx-fsr2-api/shaders/ffx_fsr2_rcas.h
+
+→ CAS / RCAS モードはリニア信号で式どおりに解き、結果だけを知覚空間へ変換して共通リミッタに通す構成にした。
+
+### ハローの非対称制限
+- bacondither Adaptive Sharpen: 局所の min/max までの距離 + overshoot を上限とするソフトリミット。明るい側 `L_overshoot 0.003`、暗い側 `D_overshoot 0.009`（明るい側は暗い側の 1/3）。ガンマ空間での処理を前提とする。
+- NVIDIA NIS: 方向性の USM と、中心輝度に比例するリミット。
+- LumaSharpen: 輝度差分を `±0.035` で対称クランプし、RGB に加算。
+- 出典:
+  - https://github.com/bacondither/Adaptive-sharpen/tree/master/shaders
+  - https://github.com/NVIDIAGameWorks/NVIDIAImageScaling/blob/main/NIS/NIS_Scaler.h
+  - https://github.com/CeeJayDK/SweetFX/blob/master/Shaders/SweetFX/LumaSharpen.fx
+
+→ 全モード共通の Halo Control（Overshoot / Undershoot、既定 0.01 / 0.03）として実装した。
+
+### Unity HDRP 標準のシャープとの関係
+- HDRP の TAA には Low Quality / Post Sharpen / Contrast Adaptive Sharpening の 3 モードと History Sharpening がある。FSR 使用時は RCAS（既定 0.2 stops）がかかる。
+- ProSharpen と併用すると二重シャープになるため、どちらかを弱める必要がある。
+- 出典:
+  - https://github.com/Unity-Technologies/Graphics/blob/master/Packages/com.unity.render-pipelines.high-definition/Runtime/PostProcessing/Shaders/PostSharpenPass.compute
+  - https://github.com/Unity-Technologies/Graphics/blob/master/Packages/com.unity.render-pipelines.core/Runtime/Utilities/FSRUtils.cs
+
+### 近年の動向
+- DLSS は内蔵シャープを廃止する方向、XeSS / Unity STP にも独立したシャープ設定は見当たらない。シャープは RCAS や NIS など後段の独立パスに任せる流れ。
+- 2023 年以降、シャープニング単体の新しい論文・学会発表は今回の調査では見つからなかった。単一パスの方向性フィルタの実例としては Snapdragon GSR1 がある。
+  - https://github.com/SnapdragonStudios/snapdragon-gsr/tree/main/sgsr/v1

@@ -9,7 +9,8 @@ Professional-grade sharpening post-process for Unity HDRP and URP.
 - **TAA/DLSS Recovery** — Motion-aware sharpening for temporal AA softness recovery (HDRP)
 - **Depth-Aware** — Modulate sharpening by distance
 - **Layer Masking** — Selective sharpening via mask textures or layer-based passes
-- **Artifact Prevention** — Neighborhood clamping, soft clamping, noise gating
+- **Halo Control** — 明るい側 / 暗い側を別々に制限する非対称ソフトリミッタ、ノイズゲート
+- **Perceptual Processing** — 知覚空間でのハロー制御と合成、輝度のみ / RGB の切り替え
 
 ## Requirements
 
@@ -47,73 +48,84 @@ git submodule add <repository-url> Packages/ProSharpen
 
 ---
 
+## 処理の流れ
+
+すべてのモードは次の共通パイプラインを通ります。
+
+1. 各モードが近傍画素からシャープ量を求める（CAS / RCAS は AMD の仕様どおりリニア信号、USM / Adaptive は知覚空間＝ガンマ 2.0）
+2. シャープ量を知覚空間の値に揃える
+3. **Noise Threshold**（CAS 以外）: 局所コントラストが小さい平坦部はシャープしない
+4. Intensity・深度・モーション・マスクを掛ける
+5. **Halo Control**: 出力が「近傍の最小値 − Undershoot 〜 近傍の最大値 + Overshoot」に収まるよう滑らかに制限し、さらに **Detail Limit** で 1 画素あたりの変化量に上限を掛ける
+6. 知覚空間で中心画素へ加算し、リニアへ戻す（アルファはそのまま通す）
+
+**Luminance Only** は全モードで有効です。オンにすると輝度だけでシャープ量を求めて RGB に同じ量を加えるため、色のにじみが出ません。オフにすると RGB 各チャンネルを個別に処理します。
+
+> HDRP の TAA シャープ（Sharpen Strength / History Sharpening）や FSR の Sharpness と併用すると二重にシャープがかかります。ProSharpen を使う場合はそちらを弱めてください。
+
+---
+
 ## Algorithm Guide
 
 ### CAS (Contrast Adaptive Sharpening)
 
-AMD FidelityFX CAS ベース。ローカルコントラストを分析し、クリッピングせずにシャープにできる量を自動計算。
-
-**仕組み:** 周辺ピクセルの min/max からコントラストの余裕を算出し、フィルタの negative lobe weight を決定。余裕が大きい場所ほど強くシャープにかかる。
+AMD FidelityFX CAS（`ffx_cas.h`）の式に準拠。近傍の min/max から「クリップせずにシャープできる余裕」を求め、その平方根をフィルタの負ローブに掛けます。
 
 | | Realtime | High |
 |---|---|---|
-| サンプル | 十字 5 タップ | 全 9 タップ (3x3) + Corner Weight |
-| min/max 推定 | 十字のみ | 3x3 全域 |
+| サンプル | 十字 5 タップ | 3x3 の 9 タップ |
+| min/max 推定 | 十字 | 十字 + 対角（AMD の "better diagonals"） |
 | パラメータ | Sharpness | Sharpness, Corner Weight |
 
-- **長所:** 極めて高速、リンギング/ハローが出にくい、汎用性が高い
-- **短所:** ノイズ抑制なし（粒状感が残りうる）
-- **推奨用途:** リアルタイム描画、ゲーム、一般的なシーン
+- **長所:** 最も軽い。コントラストの高い場所ほど自動で弱くなる
+- **短所:** ノイズゲートを持たないため、粒状感は増幅されうる
+- **推奨用途:** 軽さ優先の常用シャープ
+
+Corner Weight は負ローブのうち対角へ配分する割合です（0 で十字のみ）。合計のシャープ量は変わりません。
 
 ### RCAS (Robust CAS)
 
-AMD FidelityFX FSR の RCAS パスベース。CAS の数学的改良版。
-
-**仕組み:** クリッピングが起きるギリギリのフィルタウェイトをチャンネルごとに厳密に逆算。ノイズ検出（高周波成分の正規化 + ノイズゲート）で粒状感の増幅を抑制。
+AMD FidelityFX FSR1 の RCAS（`ffx_fsr1.h`）に準拠。出力が 0〜1 をはみ出さない限界のフィルタ重みをチャンネルごとに解き、最も控えめな値を使います。孤立したノイズ画素では重みを最大 50% 下げます。
 
 | | Realtime | High |
 |---|---|---|
-| サンプル | 十字 5 タップ | 十字 5 タップ (フィルタ) + コーナー 4 タップ (bounds) |
-| min/max 推定 | 4 タップ | 4 タップ + 8 タップの平均 |
-| ノイズ抑制 | あり (強化済み) | あり |
+| サンプル | 十字 5 タップ | 十字 5 タップ（フィルタ）+ 対角 4 タップ（min/max） |
+| min/max 推定 | 4 タップ | 4 タップと 8 タップの平均（斜めエッジで控えめ） |
 
-- **長所:** CAS より数学的に最適、組み込みノイズ耐性、FSR パイプラインとの親和性
-- **短所:** CAS より若干重い
-- **推奨用途:** FSR/DLSS 後のリカバリ、ノイズの多い入力
+- **長所:** ノイズ耐性がある。アップスケーラ後のリカバリに向く
+- **推奨用途:** FSR / DLSS / TAA 後のリカバリ、ノイズのある入力
 
 ### Unsharp Mask (USM)
 
-写真・画像編集の古典的手法。
-
-**仕組み:** `出力 = 元画像 + amount * (元画像 - ぼかし画像)` 。ぼかしとの差分（ディテール信号）を増幅して加算。Noise Threshold で微小な差分（ノイズ）をゲートし、Clamp Limit で過剰な補正を防止。
+`出力 = 元画像 + amount * (元画像 − ガウスぼかし)`。**Radius**（ガウスの標準偏差、ピクセル）で強調するディテールの太さを選べます。
 
 | | Realtime | High |
 |---|---|---|
-| ブラーカーネル | 3x3 Gaussian (sigma ~0.85) | 3x3 Box (sigma ~1.5、より広い) |
-| ディテール信号 | 繊細・局所的 | 大きい・明瞭 |
+| サンプル | 3x3 = 9 バイリニアタップ | 5x5 = 25 バイリニアタップ |
+| ぼかし | 5x5 ガウス相当（Radius 約 1.3 まで） | 9x9 ガウス相当（Radius 約 2.5 まで） |
 
-- **長所:** 直感的パラメータ、Luma Only で色ずれ防止、細かい制御が可能
-- **短所:** ハロー/リンギングが出やすい（SoftClamp で軽減）
-- **推奨用途:** 写真的な仕上げ、明確なディテール強調
+バイリニア補間を使って 2 テクセルを 1 タップで読むため、タップ数の割に正確なガウスになります。
 
-> **Note:** Sharpness スライダー [0, 1] は内部で [0, 2.5] にリマップされます。
+- **長所:** 半径を選べる。写真的な仕上がり
+- **短所:** 半径が大きいほどハローが出やすい（Halo Control で制限）
+- **推奨用途:** 明確なディテール強調、やや太い質感の強調
+
+> **Note:** Sharpness スライダー [0, 1] は内部で Amount [0, 2.5] にリマップされます。
 
 ### Adaptive Sharpen
 
-複合アプローチの独自実装。
+3x3 近傍を解析し、画素ごとにシャープの掛け方を変える独自実装です。
 
-**仕組み:** Sobel エッジ検出 + Michelson コントラスト分析でピクセルごとにシャープ強度を自動調整。低コントラスト域は強化、エッジ付近は抑制。
+- **Detail Boost:** 低〜中コントラストの質感（肌、布、髪など）のゲインを上げる
+- **Edge Protection:** 強いエッジ（輪郭線、LED の画素境界など）のゲインを下げ、さらにシャープの向きを「エッジを横切る方向」だけに絞る
 
-- Edge Protection: エッジ上のジャギー防止度合い
-- Detail Boost: 低コントラスト域の追加強化量
+等方的なシャープはエッジに沿った方向の凹凸（ジャギーの階段）も増幅します。Edge Protection を上げると、勾配方向の 2 階微分だけを使う方向性シャープへ切り替わり、エッジの立ち上がりは鋭くしつつ階段は増幅しにくくなります。
 
 | | Realtime | High |
 |---|---|---|
-| 差異 | なし | なし |
+| 差異 | なし（常に 9 タップ） | なし |
 
-- **長所:** 最もインテリジェントな適応処理、手動調整が少なくて済む
-- **短所:** 4 つの中で最も重い
-- **推奨用途:** 最終出力品質重視、プリレンダ
+- **推奨用途:** トゥーン調や高コントラストなエッジが多い画面で、質感だけを上げたい場合
 
 ---
 
@@ -125,19 +137,29 @@ AMD FidelityFX FSR の RCAS パスベース。CAS の数学的改良版。
 |---|---|---|
 | **Mode** | Enum | シャープニングアルゴリズム選択 |
 | **Quality** | Realtime / High | 品質レベル |
-| **Intensity** | 0 - 1 | 元画像とシャープ結果のブレンド比 |
-| **Sharpness** | 0 - 1 | シャープニング強度 |
+| **Intensity** | 0 - 1 | シャープ量全体の倍率 |
+| **Sharpness** | 0 - 1 | アルゴリズムのシャープ強度 |
 
 ### Advanced (モード別)
 
 | パラメータ | 表示モード | 説明 |
 |---|---|---|
-| **Luminance Only** | 全モード | 輝度空間でのみ処理（色ずれ防止） |
-| **Edge Protection** | Adaptive | エッジ上のシャープ抑制量 |
-| **Detail Boost** | Adaptive | 低コントラスト域の追加強化 |
-| **Noise Threshold** | USM, RCAS | この値以下の差分はシャープしない |
-| **Clamp Limit** | USM | 最大補正量（ハロー防止） |
-| **Corner Weight** | CAS (High) | コーナーサンプルの重み |
+| **Luminance Only** | 全モード | 輝度だけでシャープ量を求める（色にじみ防止） |
+| **Edge Protection** | Adaptive | 強いエッジのゲイン低減と方向性シャープへの切り替え量 |
+| **Detail Boost** | Adaptive | 低〜中コントラスト域の追加ゲイン |
+| **Noise Threshold** | USM, RCAS, Adaptive | 局所コントラストがこの値未満の平坦部はシャープしない |
+| **Detail Limit** | 全モード | 1 画素あたりの最大変化量（知覚空間） |
+| **Corner Weight** | CAS (High) | 対角サンプルへの負ローブ配分 |
+| **Radius** | USM | ぼかし半径（ピクセル） |
+
+### Halo Control
+
+| パラメータ | 既定値 | 説明 |
+|---|---|---|
+| **Overshoot (Bright)** | 0.01 | 明るい側のハロー許容量。0 で白ハローなし |
+| **Undershoot (Dark)** | 0.03 | 暗い側のハロー許容量。0 で黒ハローなし |
+
+値は知覚空間（ガンマ 2.0）での量です。白いハローは黒いハローより目立つため、既定では明るい側を厳しくしています。両方を上げるとエッジのメリハリ（アキュータンス）が強くなり、0 にすると近傍の明るさの範囲を一切超えません。
 
 ### Depth-Aware
 
@@ -158,14 +180,19 @@ AMD FidelityFX FSR の RCAS パスベース。CAS の数学的改良版。
 
 ## Selective Sharpening
 
+**Selective Masking** を有効にすると、マスクが白い場所だけシャープします。
+
 ### Mask Texture
 グレースケールテクスチャを割り当て。白 = フルシャープ、黒 = シャープなし。
 
 ### Layer-Based (HDRP)
-`ProSharpenStencilMaskPass` Custom Pass で特定レイヤーからマスクを自動生成。
+Custom Pass Volume に `ProSharpenStencilMaskPass` を追加すると、指定レイヤーのオブジェクトからマスクを自動生成します。Volume 側の Mask Texture が未指定のとき、このマスクが使われます。
+
+- **Depth Test**（既定オン）: カメラ深度と比較し、手前の物体に隠れた部分をマスクから除外します。深度プリパスより前の Injection Point で使う場合はオフにしてください。
+- 頂点アニメーションをシェーダー内で行うマテリアルは、マスクの形状に反映されません。
 
 ### Layer-Based (Camera)
-`ProSharpenMaskGenerator` をカメラにアタッチし、生成される `MaskTexture` を Volume に割り当て。
+`ProSharpenMaskGenerator` は Replacement Shader（`Camera.RenderWithShader`）を使うため、**Built-in Render Pipeline 専用**です。HDRP / URP では正しいマスクになりません。HDRP では上記の Custom Pass を使ってください。
 
 ---
 
@@ -173,11 +200,22 @@ AMD FidelityFX FSR の RCAS パスベース。CAS の数学的改良版。
 
 | 用途 | 推奨 |
 |---|---|
-| ゲーム・リアルタイム (高速) | **CAS** Realtime |
-| FSR / DLSS 後のリカバリ | **RCAS** |
-| 写真的・精密な仕上げ | **USM** High |
-| 自動・手軽な高品質 | **Adaptive** |
-| ノイズの多いソース | **RCAS** (Noise Threshold 調整) |
+| 軽さ優先の常用シャープ | **CAS** Realtime |
+| FSR / DLSS / TAA 後のリカバリ | **RCAS** |
+| 半径を選んだ写真的な仕上げ | **USM**（Radius 1.0 前後、太い質感は High + Radius 1.5〜2.5） |
+| トゥーン調・高コントラストなエッジが多い画面 | **Adaptive**（Edge Protection 0.5〜1.0） |
+| ノイズの多いソース | **RCAS** または **Adaptive**（Noise Threshold 調整） |
+
+## Compatibility
+
+| | 対応状況 |
+|---|---|
+| HDRP 14 (Unity 2022.3) 〜 HDRP 17 (Unity 6) | 対応 |
+| URP 14 (Unity 2022.3) | Compatibility Mode（`Execute`）で動作 |
+| URP 17.0〜17.2 (Unity 6.0〜6.2) | Render Graph / Compatibility Mode |
+| URP 17.3 以降 (Unity 6.3〜) | Render Graph。Compatibility Mode 用のコードは `URP_COMPATIBILITY_MODE` 定義時のみコンパイル |
+
+URP の Render Graph では、アクティブなカラーターゲットがバックバッファの場合シャープをスキップします（パスは中間テクスチャを要求するため、通常は発生しません）。
 
 ## License
 

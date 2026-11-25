@@ -1,100 +1,40 @@
 Shader "Hidden/ProSharpen/ProSharpen"
 {
     // ========================================================================
-    // ProSharpen - Professional Sharpening Post-Process
-    // Supports HDRP and URP with proper SRP conventions
+    // ProSharpen - プロ向けシャープニング ポストプロセス
+    // HDRP / URP の両方に対応。アルゴリズム本体は ProSharpenCore.hlsl にある
     // ========================================================================
 
     HLSLINCLUDE
         #pragma target 4.5
-        #pragma multi_compile_local _ PROSHARPEN_CAS PROSHARPEN_UNSHARP PROSHARPEN_ADAPTIVE PROSHARPEN_RCAS
-        #pragma multi_compile_local _ PROSHARPEN_HIGH_QUALITY
-        #pragma multi_compile_local _ PROSHARPEN_LUMA_ONLY
-        #pragma multi_compile_local _ PROSHARPEN_DEPTH_AWARE
-        #pragma multi_compile_local _ PROSHARPEN_MOTION_AWARE
-        #pragma multi_compile_local _ PROSHARPEN_MASK_ENABLED
 
-        #include "CAS.hlsl"
-        #include "UnsharpMask.hlsl"
-        #include "AdaptiveSharpen.hlsl"
-        #include "RCAS.hlsl"
+        // モード。どれも有効でない場合は先頭の CAS が選ばれる
+        #pragma multi_compile_local_fragment PROSHARPEN_CAS PROSHARPEN_UNSHARP PROSHARPEN_ADAPTIVE PROSHARPEN_RCAS
+        #pragma multi_compile_local_fragment _ PROSHARPEN_HIGH_QUALITY
+        #pragma multi_compile_local_fragment _ PROSHARPEN_LUMA_ONLY
+        #pragma multi_compile_local_fragment _ PROSHARPEN_DEPTH_AWARE
+        #pragma multi_compile_local_fragment _ PROSHARPEN_MOTION_AWARE
+        #pragma multi_compile_local_fragment _ PROSHARPEN_MASK_ENABLED
 
-        // Parameters
         float _Intensity;
-        float _Sharpness;
-        float _EdgeProtection;
-        float _DetailBoost;
-        float _NoiseThreshold;
-        float _ClampLimit;
-        float _CornerWeight;
 
-        // Depth-aware parameters
+        // 深度連動
         float _DepthNearStrength;
         float _DepthFarStrength;
         float _DepthNearPlane;
         float _DepthFarPlane;
 
-        // Motion-aware parameters
+        // モーション連動
         float _MotionThreshold;
         float _MotionReduction;
-
-        // Core sharpening logic shared by both pipelines
-        float3 ProSharpenCore(float3 a, float3 b, float3 c,
-                              float3 d, float3 e, float3 f,
-                              float3 g, float3 h, float3 i)
-        {
-            float3 result = e;
-
-            #if defined(PROSHARPEN_CAS)
-            {
-                #if defined(PROSHARPEN_HIGH_QUALITY)
-                    result = ApplyCASHighQuality(a, b, c, d, e, f, g, h, i, _Sharpness, _CornerWeight);
-                #else
-                    result = ApplyCAS(a, b, c, d, e, f, g, h, i, _Sharpness);
-                #endif
-            }
-            #elif defined(PROSHARPEN_UNSHARP)
-            {
-                #if defined(PROSHARPEN_HIGH_QUALITY)
-                    // High Quality: wider box blur for larger detail signal
-                    float3 blurred = GaussianBlurWide3x3(a, b, c, d, e, f, g, h, i);
-                #else
-                    float3 blurred = GaussianBlur3x3(a, b, c, d, e, f, g, h, i);
-                #endif
-                #if defined(PROSHARPEN_LUMA_ONLY)
-                    result = ApplyUnsharpMaskLuma(e, blurred, _Sharpness, _NoiseThreshold, _ClampLimit);
-                #else
-                    result = ApplyUnsharpMask(e, blurred, _Sharpness, _NoiseThreshold, _ClampLimit);
-                #endif
-            }
-            #elif defined(PROSHARPEN_ADAPTIVE)
-            {
-                result = ApplyAdaptiveSharpen(a, b, c, d, e, f, g, h, i,
-                    _Sharpness, _EdgeProtection, _DetailBoost);
-            }
-            #elif defined(PROSHARPEN_RCAS)
-            {
-                #if defined(PROSHARPEN_HIGH_QUALITY)
-                    result = ApplyRCASHighQuality(a, b, c, d, e, f, g, h, i, _Sharpness, _NoiseThreshold);
-                #else
-                    result = ApplyRCAS(b, d, e, f, h, _Sharpness, _NoiseThreshold);
-                #endif
-            }
-            #endif
-
-            // Blend with intensity
-            result = lerp(e, result, _Intensity);
-            return max(result, 0.0);
-        }
     ENDHLSL
 
     // ========================================================================
     // HDRP SubShader
-    // Uses HDRP conventions: TEXTURE2D_X, GetFullScreenTriangleVertexPosition,
-    // ClampAndScaleUVForBilinearPostProcessTexture for DLSS/DRS support
     // ========================================================================
     SubShader
     {
+        PackageRequirements { "com.unity.render-pipelines.high-definition" }
         Tags { "RenderPipeline" = "HDRenderPipeline" }
 
         Pass
@@ -112,16 +52,22 @@ Shader "Hidden/ProSharpen/ProSharpen"
             #include "Packages/com.unity.render-pipelines.high-definition/Runtime/ShaderLibrary/ShaderVariables.hlsl"
 
             TEXTURE2D_X(_MainTex);
-            float4 _MainTex_TexelSize;
 
-            #ifdef PROSHARPEN_MOTION_AWARE
-            TEXTURE2D_X(_CameraMotionVectorsTexture);
-            #endif
+            // _CameraMotionVectorsTexture は HDRP の ShaderVariables.hlsl が宣言済み
 
             #ifdef PROSHARPEN_MASK_ENABLED
             TEXTURE2D(_MaskTex);
-            SAMPLER(sampler_MaskTex);
             #endif
+
+            // ポストプロセス用バッファは RTHandle のため、ビューポート外を読まないよう
+            // クランプしてからスケールを掛ける (動的解像度 / DLSS / FSR に対応)
+            float4 ProSharpenSampleSource(float2 uv)
+            {
+                return SAMPLE_TEXTURE2D_X_LOD(_MainTex, s_linear_clamp_sampler,
+                    ClampAndScaleUVForBilinearPostProcessTexture(uv), 0);
+            }
+
+            #include "ProSharpenCore.hlsl"
 
             struct Attributes
             {
@@ -150,63 +96,37 @@ Shader "Hidden/ProSharpen/ProSharpen"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                // Use HDRP's UV clamping for DLSS/dynamic resolution support
-                float2 uv = ClampAndScaleUVForBilinearPostProcessTexture(input.texcoord);
-                float2 texelSize = _MainTex_TexelSize.xy;
+                float2 uv = input.texcoord;
+                float strength = _Intensity;
 
-                // Sample 3x3 neighborhood
-                float3 a, b, c, d, e, f, g, h, i;
-                a = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2(-texelSize.x,  texelSize.y)).rgb;
-                b = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2(0.0,           texelSize.y)).rgb;
-                c = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2( texelSize.x,  texelSize.y)).rgb;
-                d = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2(-texelSize.x,  0.0        )).rgb;
-                e = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv).rgb;
-                f = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2( texelSize.x,  0.0        )).rgb;
-                g = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2(-texelSize.x, -texelSize.y)).rgb;
-                h = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2(0.0,          -texelSize.y)).rgb;
-                i = SAMPLE_TEXTURE2D_X(_MainTex, s_linear_clamp_sampler, uv + float2( texelSize.x, -texelSize.y)).rgb;
+                // 深度とモーションベクターはアップスケール前の解像度 (_ScreenSize) で
+                // 格納されているため、0..1 の UV から画素座標を求める
+                #if defined(PROSHARPEN_DEPTH_AWARE) || defined(PROSHARPEN_MOTION_AWARE)
+                uint2 positionSS = uint2(min(uv * _ScreenSize.xy, _ScreenSize.xy - 1.0));
+                #endif
 
-                float3 result = ProSharpenCore(a, b, c, d, e, f, g, h, i);
-
-                // Depth-aware modulation
                 #ifdef PROSHARPEN_DEPTH_AWARE
                 {
-                    // Use scaled UV for screen-space position to match DLSS/DRS
-                    uint2 positionSS = uv * _ScreenSize.xy;
-                    float depth = LoadCameraDepth(positionSS);
-                    float linearDepth = LinearEyeDepth(depth, _ZBufferParams);
-                    float normalizedDepth = saturate((linearDepth - _DepthNearPlane) / (_DepthFarPlane - _DepthNearPlane + 0.001));
-                    float depthFactor = DepthSharpenFactor(normalizedDepth, 0.0, 1.0,
+                    float linearDepth = LinearEyeDepth(LoadCameraDepth(positionSS), _ZBufferParams);
+                    strength *= DepthSharpenFactor(linearDepth, _DepthNearPlane, _DepthFarPlane,
                         _DepthNearStrength, _DepthFarStrength);
-                    result = lerp(e, result, depthFactor);
                 }
                 #endif
 
-                // Motion-aware modulation (TAA/DLSS recovery)
                 #ifdef PROSHARPEN_MOTION_AWARE
                 {
-                    // Use the same scaled UV as color sampling to avoid coordinate mismatch
-                    uint2 positionSS = uv * _ScreenSize.xy;
-                    float2 motionVec = LOAD_TEXTURE2D_X(_CameraMotionVectorsTexture, positionSS).xy;
-                    // Validate motion vector: reject obviously invalid data
-                    float motionMag = length(motionVec);
-                    if (motionMag < 10.0) // reject garbage values (>10 is clearly invalid)
-                    {
-                        float motionFactor = MotionSharpenFactor(motionVec, _MotionThreshold, _MotionReduction);
-                        result = lerp(e, result, motionFactor);
-                    }
+                    // HDRP はモーションベクター無効の画素を x > 1 で表す
+                    float2 motion = LOAD_TEXTURE2D_X(_CameraMotionVectorsTexture, positionSS).xy;
+                    motion = motion.x > 1.0 ? float2(0.0, 0.0) : motion;
+                    strength *= MotionSharpenFactor(motion, _MotionThreshold, _MotionReduction);
                 }
                 #endif
 
-                // Mask-based selective sharpening
                 #ifdef PROSHARPEN_MASK_ENABLED
-                {
-                    float mask = SAMPLE_TEXTURE2D(_MaskTex, sampler_MaskTex, input.texcoord).r;
-                    result = lerp(e, result, mask);
-                }
+                strength *= SAMPLE_TEXTURE2D_LOD(_MaskTex, s_linear_clamp_sampler, uv, 0).r;
                 #endif
 
-                return float4(result, 1.0);
+                return ProSharpenApply(uv, _PostProcessScreenSize.zw, strength);
             }
             ENDHLSL
         }
@@ -214,10 +134,11 @@ Shader "Hidden/ProSharpen/ProSharpen"
 
     // ========================================================================
     // URP SubShader
-    // Uses Blit.hlsl conventions: _BlitTexture, Vert from Blit.hlsl
+    // Blit.hlsl の規約 (_BlitTexture、Vert) を使用する
     // ========================================================================
     SubShader
     {
+        PackageRequirements { "com.unity.render-pipelines.universal" }
         Tags { "RenderPipeline" = "UniversalPipeline" }
 
         Pass
@@ -232,62 +153,46 @@ Shader "Hidden/ProSharpen/ProSharpen"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
-            // Vert and Varyings are provided by Blit.hlsl
-            // _BlitTexture is the source texture, set by the Blitter API
-
-            float4 _BlitTexture_TexelSize;
-
             #ifdef PROSHARPEN_DEPTH_AWARE
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
             #endif
 
             #ifdef PROSHARPEN_MASK_ENABLED
             TEXTURE2D(_MaskTex);
-            SAMPLER(sampler_MaskTex);
             #endif
+
+            float4 ProSharpenSampleSource(float2 uv)
+            {
+                return SAMPLE_TEXTURE2D_X_LOD(_BlitTexture, sampler_LinearClamp, uv, 0);
+            }
+
+            #include "ProSharpenCore.hlsl"
 
             float4 Frag(Varyings input) : SV_Target
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
                 float2 uv = input.texcoord;
-                float2 texelSize = _BlitTexture_TexelSize.xy;
 
-                // Sample 3x3 neighborhood using _BlitTexture from Blit.hlsl
-                float3 a, b, c, d, e, f, g, h, i;
-                a = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(-texelSize.x,  texelSize.y)).rgb;
-                b = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(0.0,           texelSize.y)).rgb;
-                c = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2( texelSize.x,  texelSize.y)).rgb;
-                d = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(-texelSize.x,  0.0        )).rgb;
-                e = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv).rgb;
-                f = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2( texelSize.x,  0.0        )).rgb;
-                g = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(-texelSize.x, -texelSize.y)).rgb;
-                h = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(0.0,          -texelSize.y)).rgb;
-                i = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2( texelSize.x, -texelSize.y)).rgb;
+                // 1 画素分の UV 幅は UV のスクリーン空間微分から得る。
+                // _BlitTexture_TexelSize は URP のバージョンによって宣言の有無が異なるため使わない
+                float2 texel = abs(float2(ddx(uv.x), ddy(uv.y)));
 
-                float3 result = ProSharpenCore(a, b, c, d, e, f, g, h, i);
+                float strength = _Intensity;
 
-                // Depth-aware modulation
                 #ifdef PROSHARPEN_DEPTH_AWARE
                 {
-                    float depth = SampleSceneDepth(uv);
-                    float linearDepth = LinearEyeDepth(depth, _ZBufferParams);
-                    float normalizedDepth = saturate((linearDepth - _DepthNearPlane) / (_DepthFarPlane - _DepthNearPlane + 0.001));
-                    float depthFactor = DepthSharpenFactor(normalizedDepth, 0.0, 1.0,
+                    float linearDepth = LinearEyeDepth(SampleSceneDepth(uv), _ZBufferParams);
+                    strength *= DepthSharpenFactor(linearDepth, _DepthNearPlane, _DepthFarPlane,
                         _DepthNearStrength, _DepthFarStrength);
-                    result = lerp(e, result, depthFactor);
                 }
                 #endif
 
-                // Mask-based selective sharpening
                 #ifdef PROSHARPEN_MASK_ENABLED
-                {
-                    float mask = SAMPLE_TEXTURE2D(_MaskTex, sampler_MaskTex, uv).r;
-                    result = lerp(e, result, mask);
-                }
+                strength *= SAMPLE_TEXTURE2D_LOD(_MaskTex, sampler_LinearClamp, uv, 0).r;
                 #endif
 
-                return float4(result, 1.0);
+                return ProSharpenApply(uv, texel, strength);
             }
             ENDHLSL
         }

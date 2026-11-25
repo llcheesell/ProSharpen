@@ -40,11 +40,22 @@ namespace LLCheesell.ProSharpen
         [Tooltip("Detail boost for low-contrast areas.")]
         public ClampedFloatParameter detailBoost = new ClampedFloatParameter(0.3f, 0f, 1f);
 
-        [Tooltip("Noise threshold. Differences below this are not sharpened (USM mode).")]
+        [Tooltip("ノイズしきい値。局所コントラストがこの値未満の平坦部はシャープしない (USM / RCAS / Adaptive)。")]
         public ClampedFloatParameter noiseThreshold = new ClampedFloatParameter(0.02f, 0f, 0.1f);
 
-        [Tooltip("Maximum sharpening adjustment to prevent halos.")]
+        [Tooltip("1 画素あたりの最大変化量 (知覚空間)。高コントラストなエッジの過剰な強調を抑える。")]
         public ClampedFloatParameter clampLimit = new ClampedFloatParameter(0.15f, 0.01f, 0.5f);
+
+        [Tooltip("ぼかし半径 (ガウスの標準偏差、ピクセル)。大きいほど太いディテールを強調する (USM)。Realtime は約 1.3 まで、High は約 2.5 まで有効。")]
+        public ClampedFloatParameter radius = new ClampedFloatParameter(1f, 0.5f, 3f);
+
+        // --- Halo Control ---
+        [Header("Halo Control")]
+        [Tooltip("明るい側のハロー許容量 (知覚空間)。近傍の最大値をどこまで超えてよいか。0 で白ハローなし。")]
+        public ClampedFloatParameter overshoot = new ClampedFloatParameter(0.01f, 0f, 0.25f);
+
+        [Tooltip("暗い側のハロー許容量 (知覚空間)。近傍の最小値をどこまで下回ってよいか。0 で黒ハローなし。")]
+        public ClampedFloatParameter undershoot = new ClampedFloatParameter(0.03f, 0f, 0.25f);
 
         [Tooltip("Corner sample weight for CAS High Quality mode.")]
         public ClampedFloatParameter cornerWeight = new ClampedFloatParameter(0.5f, 0f, 1f);
@@ -82,7 +93,7 @@ namespace LLCheesell.ProSharpen
         [Tooltip("Enable mask-based selective sharpening.")]
         public BoolParameter maskEnabled = new BoolParameter(false);
 
-        [Tooltip("Mask texture. White = full sharpening, Black = no sharpening.")]
+        [Tooltip("マスクテクスチャ。白 = シャープあり、黒 = シャープなし。未指定の場合は ProSharpenStencilMaskPass が生成したマスクを使う。")]
         public TextureParameter maskTexture = new TextureParameter(null);
 
         Material _material;
@@ -104,16 +115,26 @@ namespace LLCheesell.ProSharpen
             if (_material == null)
                 return;
 
-            // Set keywords
+            // マスク: テクスチャ指定を優先し、無ければレイヤーマスク用パスのグローバルマスクを使う
+            Texture mask = null;
+            if (maskEnabled.value)
+            {
+                mask = maskTexture.value;
+                if (mask == null)
+                    mask = ProSharpenMaskRegistry.GetMask(camera.camera);
+            }
+
             ProSharpenMaterialSetup.SetKeywords(_material,
                 mode.value, quality.value, lumaOnly.value,
-                depthAware.value, motionAware.value, maskEnabled.value);
+                depthAware.value, motionAware.value, mask != null);
 
-            // Set properties
             ProSharpenMaterialSetup.SetProperties(_material,
                 intensity.value, sharpness.value, edgeProtection.value,
                 detailBoost.value, noiseThreshold.value, clampLimit.value,
-                cornerWeight.value);
+                cornerWeight.value, overshoot.value, undershoot.value);
+
+            if (mode.value == SharpenMode.UnsharpMask)
+                ProSharpenMaterialSetup.SetBlurKernel(_material, radius.value, quality.value);
 
             if (depthAware.value)
             {
@@ -128,10 +149,8 @@ namespace LLCheesell.ProSharpen
                     motionThreshold.value, motionReduction.value);
             }
 
-            if (maskEnabled.value && maskTexture.value != null)
-            {
-                _material.SetTexture(ProSharpenShaderConstants.MaskTexId, maskTexture.value);
-            }
+            if (mask != null)
+                _material.SetTexture(ProSharpenShaderConstants.MaskTexId, mask);
 
             _material.SetTexture(ProSharpenShaderConstants.MainTexId, source);
             HDUtils.DrawFullScreen(cmd, _material, destination, shaderPassId: 0);

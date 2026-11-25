@@ -2,133 +2,72 @@
 #define PROSHARPEN_ADAPTIVE_SHARPEN_INCLUDED
 
 // ============================================================================
-// Adaptive Sharpening
+// Adaptive Sharpening (方向性・エッジ適応シャープ)
 //
-// Combines multiple strategies for professional-quality sharpening:
-//   - Local contrast analysis to modulate sharpening strength
-//   - Edge detection to avoid over-sharpening edges (prevents jaggies)
-//   - Depth-aware sharpening (when depth buffer is available)
-//   - Motion-aware sharpening (when motion vectors are available)
-//     for TAA/DLSS recovery
+// 3x3 近傍 (9 タップ) を知覚空間で解析し、画素ごとにシャープの掛け方を変える。
+//   - 質感 (低〜中コントラストのディテール): Detail Boost で強める
+//   - 強いエッジ (輪郭線、LED の画素境界など): Edge Protection でゲインを下げ、
+//     さらにシャープの向きを「エッジを横切る方向」だけに絞る
+//
+// 等方的なラプラシアンはエッジに沿った方向の凹凸 (= ジャギーの階段) も増幅する。
+// 勾配方向 n の 2 階微分 n^T H n だけを使うと、エッジの立ち上がりは鋭くしつつ
+// 階段状のギザギザは増幅しない。
+//
+//  a b c
+//  d e f    e = 中心画素
+//  g h i
 // ============================================================================
 
 #include "ProSharpenCommon.hlsl"
 
-// Estimate local contrast from a 3x3 neighborhood
-// Returns a value [0,1] where 0 = flat area, 1 = high contrast
-float LocalContrast3x3(float lumA, float lumB, float lumC,
-                       float lumD, float lumE, float lumF,
-                       float lumG, float lumH, float lumI)
+// 解析のしきい値 (知覚空間の輝度差)
+#define PS_ADAPTIVE_DIR_START    0.04   // これ以上の勾配から方向性シャープへ移行し始める
+#define PS_ADAPTIVE_DIR_FULL     0.20   // これ以上の勾配では完全に方向性シャープ
+#define PS_ADAPTIVE_EDGE_START   0.12   // これ以上の勾配からゲインを下げ始める
+#define PS_ADAPTIVE_EDGE_FULL    0.50   // これ以上の勾配では Edge Protection を全量適用
+#define PS_ADAPTIVE_TEX_START    0.04   // これ以下の局所コントラストは Detail Boost を全量適用
+#define PS_ADAPTIVE_TEX_END      0.30   // これ以上の局所コントラストは Detail Boost なし
+
+// 戻り値は知覚空間の信号上の差分 (出力 - 中心)。リミッタ適用前
+PS_SIGNAL ApplyAdaptiveSharpen(PS_SIGNAL a, PS_SIGNAL b, PS_SIGNAL c,
+                               PS_SIGNAL d, PS_SIGNAL e, PS_SIGNAL f,
+                               PS_SIGNAL g, PS_SIGNAL h, PS_SIGNAL i,
+                               float sharpness, float edgeProtection, float detailBoost)
 {
-    float minLum = min(lumE, min(min(min(lumA, lumB), min(lumC, lumD)),
-                                min(min(lumF, lumG), min(lumH, lumI))));
-    float maxLum = max(lumE, max(max(max(lumA, lumB), max(lumC, lumD)),
-                                max(max(lumF, lumG), max(lumH, lumI))));
+    float la = PSLuma(a), lb = PSLuma(b), lc = PSLuma(c);
+    float ld = PSLuma(d), le = PSLuma(e), lf = PSLuma(f);
+    float lg = PSLuma(g), lh = PSLuma(h), li = PSLuma(i);
 
-    // Michelson contrast
-    float range = maxLum - minLum;
-    float mean = (maxLum + minLum) * 0.5;
-    return range / (mean + 0.05);
-}
+    // Sobel 勾配。0.25 を掛けると「段差の高さ」に相当する値になる
+    float gx = (lc + 2.0 * lf + li) - (la + 2.0 * ld + lg);
+    float gy = (la + 2.0 * lb + lc) - (lg + 2.0 * lh + li);
+    float g2 = gx * gx + gy * gy;
+    float gradient = 0.25 * sqrt(g2);
+    float2 n = float2(gx, gy) * rsqrt(g2 + 1e-8);
 
-// Sobel-based edge strength
-// Returns gradient magnitude normalized to [0,1]
-float EdgeStrength3x3(float lumA, float lumB, float lumC,
-                      float lumD, float lumE, float lumF,
-                      float lumG, float lumH, float lumI)
-{
-    // Sobel X: -1 0 1 / -2 0 2 / -1 0 1
-    float gx = (-lumA + lumC - 2.0 * lumD + 2.0 * lumF - lumG + lumI);
-    // Sobel Y: -1 -2 -1 / 0 0 0 / 1 2 1
-    float gy = (-lumA - 2.0 * lumB - lumC + lumG + 2.0 * lumH + lumI);
+    // 3x3 の局所コントラスト
+    float mn = min(le, min(min(min(la, lb), min(lc, ld)), min(min(lf, lg), min(lh, li))));
+    float mx = max(le, max(max(max(la, lb), max(lc, ld)), max(max(lf, lg), max(lh, li))));
+    float range = mx - mn;
 
-    return saturate(sqrt(gx * gx + gy * gy));
-}
+    // 等方ハイパス: 回転対称性の高い 9 点ラプラシアン (符号反転)
+    PS_SIGNAL hpIso = (20.0 * e - 4.0 * (b + d + f + h) - (a + c + g + i)) / 6.0;
 
-// Core adaptive sharpening
-// Adjusts sharpening based on:
-//   - Local contrast: sharpen more in low-contrast areas (detail recovery)
-//   - Edge strength: sharpen less on strong edges (avoid jaggies)
-float3 ApplyAdaptiveSharpen(
-    float3 a, float3 b, float3 c,
-    float3 d, float3 e, float3 f,
-    float3 g, float3 h, float3 i,
-    float intensity,        // Overall sharpening strength [0, 1]
-    float edgeProtection,   // How much to protect edges [0, 1]
-    float detailBoost)      // Extra boost for fine detail [0, 1]
-{
-    // Compute luminance for analysis
-    float lumA = Luminance709(a);
-    float lumB = Luminance709(b);
-    float lumC = Luminance709(c);
-    float lumD = Luminance709(d);
-    float lumE = Luminance709(e);
-    float lumF = Luminance709(f);
-    float lumG = Luminance709(g);
-    float lumH = Luminance709(h);
-    float lumI = Luminance709(i);
+    // 方向性ハイパス: 勾配方向の 2 階微分 (符号反転)
+    PS_SIGNAL sxx = d + f - 2.0 * e;
+    PS_SIGNAL syy = b + h - 2.0 * e;
+    PS_SIGNAL sxy = 0.25 * ((c + g) - (a + i));
+    PS_SIGNAL hpDir = -(n.x * n.x * sxx + 2.0 * n.x * n.y * sxy + n.y * n.y * syy);
 
-    // Analyze local characteristics
-    float contrast = LocalContrast3x3(lumA, lumB, lumC, lumD, lumE, lumF, lumG, lumH, lumI);
-    float edge = EdgeStrength3x3(lumA, lumB, lumC, lumD, lumE, lumF, lumG, lumH, lumI);
+    // 強いエッジほど方向性ハイパスへ寄せる
+    float dirWeight = edgeProtection * smoothstep(PS_ADAPTIVE_DIR_START, PS_ADAPTIVE_DIR_FULL, gradient);
+    PS_SIGNAL highPass = lerp(hpIso, hpDir, dirWeight);
 
-    // Adaptive strength:
-    // - In flat/low-contrast areas: sharpen more to recover detail
-    // - On strong edges: reduce sharpening to avoid jaggies
-    float contrastMod = lerp(1.0 + detailBoost, 1.0 - detailBoost * 0.5, saturate(contrast));
-    float edgeMod = lerp(1.0, 1.0 - edgeProtection, saturate(edge * 2.0));
-    float adaptiveStrength = intensity * contrastMod * edgeMod;
+    // ゲイン: 質感は持ち上げ、強いエッジは抑える
+    float textureGain = 1.0 + detailBoost * (1.0 - smoothstep(PS_ADAPTIVE_TEX_START, PS_ADAPTIVE_TEX_END, range));
+    float edgeGain = 1.0 - edgeProtection * smoothstep(PS_ADAPTIVE_EDGE_START, PS_ADAPTIVE_EDGE_FULL, gradient);
 
-    // Compute sharpening using a Laplacian-like kernel in luminance
-    // Cross kernel: -1 at neighbors, +4 at center (high-pass)
-    float lumHighPass = 4.0 * lumE - (lumB + lumD + lumF + lumH);
-
-    // Include diagonals with reduced weight for smoother result
-    float lumHighPassFull = 8.0 * lumE - (lumB + lumD + lumF + lumH)
-                          - 0.5 * (lumA + lumC + lumG + lumI);
-    lumHighPassFull /= 6.0;
-
-    // Blend between cross-only and full kernel based on edge presence
-    float highPass = lerp(lumHighPassFull, lumHighPass * 0.25, saturate(edge));
-
-    // Apply with adaptive strength
-    float sharpDetail = highPass * adaptiveStrength;
-
-    // Soft clamp to prevent artifacts
-    float clampRange = 0.1 * intensity;
-    sharpDetail = SoftClamp(sharpDetail, clampRange);
-
-    // Apply in luminance space with ratio clamping to prevent bloating
-    float newLum = lumE + sharpDetail;
-    // Clamp the luminance ratio to prevent excessive brightening/darkening
-    float ratio = clamp(newLum / max(lumE, 1e-5), 0.75, 1.25);
-    float3 result = lumE < 1e-5 ? e : e * ratio;
-
-    // Strict neighborhood clamping (no overshoot margin to prevent "swollen" look)
-    float3 minColor = min(e, min(min(b, d), min(f, h)));
-    float3 maxColor = max(e, max(max(b, d), max(f, h)));
-    result = clamp(result, minColor, maxColor);
-
-    return max(result, 0.0);
-}
-
-// Depth-aware sharpening modifier
-// Returns a multiplier based on depth to sharpen foreground more
-float DepthSharpenFactor(float depth, float nearPlane, float farPlane,
-                         float nearStrength, float farStrength)
-{
-    float linearDepth = saturate((depth - nearPlane) / (farPlane - nearPlane));
-    return lerp(nearStrength, farStrength, linearDepth);
-}
-
-// Motion-aware sharpening modifier for TAA/DLSS recovery
-// Static areas get more sharpening, moving areas less
-// (since TAA already preserves detail in motion)
-float MotionSharpenFactor(float2 motionVector, float motionThreshold, float motionReduction)
-{
-    float motionMag = length(motionVector);
-    float motionFactor = 1.0 - smoothstep(0.0, motionThreshold, motionMag) * motionReduction;
-    return saturate(motionFactor);
+    return highPass * (sharpness * textureGain * edgeGain);
 }
 
 #endif // PROSHARPEN_ADAPTIVE_SHARPEN_INCLUDED

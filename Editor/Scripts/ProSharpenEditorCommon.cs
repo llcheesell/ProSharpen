@@ -12,9 +12,10 @@ namespace LLCheesell.ProSharpen.Editor
         public static class Styles
         {
             public static readonly GUIContent ModeLabel = new GUIContent("Sharpen Mode",
-                "CAS: Fast & artifact-resistant (AMD FidelityFX based)\n" +
-                "Unsharp Mask: Classic photographic sharpening\n" +
-                "Adaptive: Context-aware with edge protection");
+                "CAS: 高速でアーティファクトに強い (AMD FidelityFX CAS 準拠)\n" +
+                "Unsharp Mask: 半径を指定できる写真的なシャープ\n" +
+                "Adaptive: 質感を強め、強いエッジは方向性シャープで保護\n" +
+                "RCAS: クリップ限界を解く FSR のシャープ (ノイズ抑制付き)");
 
             public static readonly GUIContent QualityLabel = new GUIContent("Quality",
                 "Realtime: Optimized 3x3 kernel\nHigh: Extended neighborhood sampling");
@@ -35,10 +36,21 @@ namespace LLCheesell.ProSharpen.Editor
                 "Extra sharpening in low-contrast areas to recover fine detail (Adaptive mode)");
 
             public static readonly GUIContent NoiseThresholdLabel = new GUIContent("Noise Threshold",
-                "Differences below this value are not sharpened. Prevents noise amplification (USM mode)");
+                "局所コントラストがこの値未満の平坦部はシャープしない。ノイズの増幅を防ぐ (USM / RCAS / Adaptive)");
 
-            public static readonly GUIContent ClampLimitLabel = new GUIContent("Clamp Limit",
-                "Maximum sharpening adjustment. Lower values prevent halos");
+            public static readonly GUIContent ClampLimitLabel = new GUIContent("Detail Limit",
+                "1 画素あたりの最大変化量 (知覚空間)。小さくすると高コントラストなエッジの強調が穏やかになる");
+
+            public static readonly GUIContent RadiusLabel = new GUIContent("Radius",
+                "ぼかし半径 (ガウスの標準偏差、ピクセル)。大きいほど太いディテールを強調する。\n" +
+                "Realtime は約 1.3 まで、High は約 2.5 まで有効");
+
+            // Halo control
+            public static readonly GUIContent OvershootLabel = new GUIContent("Overshoot (Bright)",
+                "明るい側のハロー許容量 (知覚空間)。近傍の最大値をどこまで超えてよいか。0 で白ハローなし");
+
+            public static readonly GUIContent UndershootLabel = new GUIContent("Undershoot (Dark)",
+                "暗い側のハロー許容量 (知覚空間)。近傍の最小値をどこまで下回ってよいか。0 で黒ハローなし");
 
             public static readonly GUIContent CornerWeightLabel = new GUIContent("Corner Weight",
                 "Weight of corner samples in CAS High Quality mode");
@@ -83,17 +95,21 @@ namespace LLCheesell.ProSharpen.Editor
 
         /// <summary>
         /// Returns true if NoiseThreshold should be visible for the given mode.
-        /// RCAS uses it for noise gate, USM uses it for detail thresholding.
+        /// CAS 以外のモードで、平坦部のノイズゲートとして使用する。
         /// </summary>
         public static bool IsNoiseThresholdVisible(SharpenMode mode) =>
-            mode == SharpenMode.UnsharpMask || mode == SharpenMode.RCAS;
+            mode != SharpenMode.CAS;
 
         /// <summary>
         /// Returns true if ClampLimit should be visible for the given mode.
-        /// Only USM uses SoftClamp with this parameter.
+        /// 共通リミッタの絶対上限として全モードで使用する。
         /// </summary>
-        public static bool IsClampLimitVisible(SharpenMode mode) =>
-            mode == SharpenMode.UnsharpMask;
+        public static bool IsClampLimitVisible(SharpenMode mode) => true;
+
+        /// <summary>
+        /// Returns true if Radius should be visible for the given mode.
+        /// </summary>
+        public static bool IsRadiusVisible(SharpenMode mode) => mode == SharpenMode.UnsharpMask;
 
         /// <summary>
         /// Returns true if CornerWeight should be visible for the given mode and quality.

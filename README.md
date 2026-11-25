@@ -54,7 +54,7 @@ git submodule add <repository-url> Packages/ProSharpen
 
 1. 各モードが近傍画素からシャープ量を求める（CAS / RCAS は AMD の仕様どおりリニア信号、USM / Adaptive は知覚空間＝ガンマ 2.0）
 2. シャープ量を知覚空間の値に揃える
-3. **Noise Threshold**（CAS 以外）: 局所コントラストが小さい平坦部はシャープしない
+3. **Noise Threshold**: 局所コントラストが小さい平坦部はシャープしない（全モード共通。0 で無効）
 4. Intensity・深度・モーション・マスクを掛ける
 5. **Halo Control**: 出力が「近傍の最小値 − Undershoot 〜 近傍の最大値 + Overshoot」に収まるよう滑らかに制限し、さらに **Detail Limit** で 1 画素あたりの変化量に上限を掛ける
 6. 知覚空間で中心画素へ加算し、リニアへ戻す（アルファはそのまま通す）
@@ -62,6 +62,20 @@ git submodule add <repository-url> Packages/ProSharpen
 **Luminance Only** は全モードで有効です。オンにすると輝度だけでシャープ量を求めて RGB に同じ量を加えるため、色のにじみが出ません。オフにすると RGB 各チャンネルを個別に処理します。
 
 > HDRP の TAA シャープ（Sharpen Strength / History Sharpening）や FSR の Sharpness と併用すると二重にシャープがかかります。ProSharpen を使う場合はそちらを弱めてください。
+
+### アンチエイリアス / アップスケーラとの併用
+
+実描画での検証結果は [Documents/Verification_2026-11.md](Documents/Verification_2026-11.md) にあります。要点は次のとおりです。
+
+| 併用する機能 | 相性 | 補足 |
+|---|---|---|
+| SMAA | 良好 | AA なしと同じ効き方 |
+| TAA | 良好 | TAA 側の Sharpen Strength は 0 を推奨（0.5 だと ProSharpen の前段でちらつきが 15〜49% 増える） |
+| DLSS / DLAA | 良好 | アップスケール後の解像度で処理する。動的解像度でも位置ずれなし |
+| FXAA | 効果が弱まる | HDRP は FXAA を ProSharpen の後で実行するため、シャープが 5〜7 割に弱まる |
+| フィルムグレイン | 影響なし | HDRP ではグレインが ProSharpen の後で加わるため増幅されない |
+
+シャープは時間方向のちらつきも同じ割合で強めます。TAA / DLSS のちらつきが気になる場合は **RCAS**（増幅が最も小さい）を選ぶか、Noise Threshold を上げてください。
 
 ---
 
@@ -78,7 +92,7 @@ AMD FidelityFX CAS（`ffx_cas.h`）の式に準拠。近傍の min/max から「
 | パラメータ | Sharpness | Sharpness, Corner Weight |
 
 - **長所:** 最も軽い。コントラストの高い場所ほど自動で弱くなる
-- **短所:** ノイズゲートを持たないため、粒状感は増幅されうる
+- **短所:** 低コントラストな部分ほど強く掛かるため、Noise Threshold を 0 にすると TAA / DLSS の微小なちらつきを平坦部で増幅する
 - **推奨用途:** 軽さ優先の常用シャープ
 
 Corner Weight は負ローブのうち対角へ配分する割合です（0 で十字のみ）。合計のシャープ量は変わりません。
@@ -147,7 +161,7 @@ AMD FidelityFX FSR1 の RCAS（`ffx_fsr1.h`）に準拠。出力が 0〜1 をは
 | **Luminance Only** | 全モード | 輝度だけでシャープ量を求める（色にじみ防止） |
 | **Edge Protection** | Adaptive | 強いエッジのゲイン低減と方向性シャープへの切り替え量 |
 | **Detail Boost** | Adaptive | 低〜中コントラスト域の追加ゲイン |
-| **Noise Threshold** | USM, RCAS, Adaptive | 局所コントラストがこの値未満の平坦部はシャープしない |
+| **Noise Threshold** | 全モード | 局所コントラストがこの値未満の平坦部はシャープしない。0 で無効（CAS は AMD の実装と同じ挙動になる） |
 | **Detail Limit** | 全モード | 1 画素あたりの最大変化量（知覚空間） |
 | **Corner Weight** | CAS (High) | 対角サンプルへの負ローブ配分 |
 | **Radius** | USM | ぼかし半径（ピクセル） |
@@ -201,10 +215,24 @@ Custom Pass Volume に `ProSharpenStencilMaskPass` を追加すると、指定�
 | 用途 | 推奨 |
 |---|---|
 | 軽さ優先の常用シャープ | **CAS** Realtime |
-| FSR / DLSS / TAA 後のリカバリ | **RCAS** |
+| FSR / DLSS / TAA 後のリカバリ（ちらつきを増やしたくない） | **RCAS** |
 | 半径を選んだ写真的な仕上げ | **USM**（Radius 1.0 前後、太い質感は High + Radius 1.5〜2.5） |
 | トゥーン調・高コントラストなエッジが多い画面 | **Adaptive**（Edge Protection 0.5〜1.0） |
 | ノイズの多いソース | **RCAS** または **Adaptive**（Noise Threshold 調整） |
+
+## Performance
+
+3840x2160 のフルスクリーンパス 1 回あたりの GPU 時間（RTX 4090、単純なコピーは 0.023 ms）。負荷はほぼタップ数で決まります。
+
+| モード | タップ数 | Luminance Only オン | オフ (RGB) |
+|---|---|---|---|
+| CAS / RCAS Realtime | 5 | 0.04 ms | 0.06〜0.07 ms |
+| CAS / RCAS High、USM Realtime、Adaptive | 9 | 0.06〜0.07 ms | 0.07〜0.10 ms |
+| USM High | 25 | 0.16 ms | 0.17 ms |
+
+- Luminance Only はオン（既定）のほうが軽い
+- USM High は Radius が 1.3 を超えるときだけ使う。Radius 1.0 では Realtime とほぼ同じ結果で、コストは 2.5 倍
+- マスクや深度連動でシャープ量が 0 になる画素は、近傍を読まずにコピーと同じコストで抜ける
 
 ## Compatibility
 

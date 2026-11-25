@@ -36,7 +36,7 @@ namespace LLCheesell.ProSharpen.Editor
                 "Extra sharpening in low-contrast areas to recover fine detail (Adaptive mode)");
 
             public static readonly GUIContent NoiseThresholdLabel = new GUIContent("Noise Threshold",
-                "局所コントラストがこの値未満の平坦部はシャープしない。ノイズの増幅を防ぐ (USM / RCAS / Adaptive)");
+                "局所コントラストがこの値未満の平坦部はシャープしない。ノイズや TAA / DLSS のちらつきの増幅を防ぐ。0 で無効");
 
             public static readonly GUIContent ClampLimitLabel = new GUIContent("Detail Limit",
                 "1 画素あたりの最大変化量 (知覚空間)。小さくすると高コントラストなエッジの強調が穏やかになる");
@@ -95,10 +95,9 @@ namespace LLCheesell.ProSharpen.Editor
 
         /// <summary>
         /// Returns true if NoiseThreshold should be visible for the given mode.
-        /// CAS 以外のモードで、平坦部のノイズゲートとして使用する。
+        /// 平坦部のノイズゲートとして全モードで使用する。
         /// </summary>
-        public static bool IsNoiseThresholdVisible(SharpenMode mode) =>
-            mode != SharpenMode.CAS;
+        public static bool IsNoiseThresholdVisible(SharpenMode mode) => true;
 
         /// <summary>
         /// Returns true if ClampLimit should be visible for the given mode.

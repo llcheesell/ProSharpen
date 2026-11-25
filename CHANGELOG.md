@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Documents/Verification_2026-11.md`: Unity 上の実描画による検証結果（旧版との比較、AA / DLSS との相性、負荷）
 - Halo Control: 明るい側 (Overshoot) と暗い側 (Undershoot) を別々に制限する非対称ソフトリミッタを全モードに追加
 - Unsharp Mask に Radius を追加（Realtime: 5x5 ガウス相当 / High: 9x9 ガウス相当）
 - Adaptive に方向性シャープを追加（強いエッジではエッジを横切る方向だけをシャープ）
@@ -15,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProSharpenCore.hlsl`（パイプライン共通のシャープ処理本体）
 
 ### Changed
+- Noise Threshold を CAS にも適用（全モード共通に）。CAS が TAA / DLSS の微小なちらつきを平坦部で増幅する問題への対処。0 にすると従来どおり
+- シャープ量が 0 の画素（マスク外など）は近傍を読まずに入力を返すように（出力は同じで負荷だけ下がる）
 - CAS / RCAS を AMD の式に準拠する形へ書き直し（CAS の適応量、RCAS の lobe 下限とノイズ抑制）
 - USM / Adaptive を知覚空間（ガンマ 2.0）での処理に変更。ハロー制限と合成は全モードで知覚空間
 - Luminance Only が全モードで有効に（従来は USM のみ）

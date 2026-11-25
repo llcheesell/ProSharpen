@@ -3,112 +3,82 @@
 
 // ============================================================================
 // Contrast Adaptive Sharpening (CAS)
-// Based on AMD FidelityFX CAS algorithm
-// Reference: https://gpuopen.com/fidelityfx-cas/
+// AMD FidelityFX CAS (ffx_cas.h) の式に準拠
+//   https://github.com/GPUOpen-Effects/FidelityFX-CAS
 //
-// CAS works by analyzing local contrast and applying sharpening proportional
-// to how much room there is to sharpen without exceeding the local min/max.
-// This makes it inherently artifact-resistant.
+// 近傍の min/max から「クリップせずにシャープできる余裕」を求め、その平方根を
+// フィルタの負ローブに掛ける。入力は 0..1 のリニア信号を前提とする。
+//
+//  a b c
+//  d e f    e = 中心画素
+//  g h i
 // ============================================================================
 
 #include "ProSharpenCommon.hlsl"
 
-// CAS sharpening on a 3x3 neighborhood
-// Input: 3x3 neighborhood samples (a-i), sharpness factor
-// Output: sharpened center pixel color
-//
-//  a b c
-//  d e f    e = center pixel
-//  g h i
-//
-float3 ApplyCAS(float3 a, float3 b, float3 c,
-                float3 d, float3 e, float3 f,
-                float3 g, float3 h, float3 i,
-                float sharpness)
+// CAS の適応量 (0..1) を返す。mn / mx は十字 5 タップの輝度 min / max
+float CASAmount(float mn, float mx)
 {
-    // Convert to luminance for contrast analysis
-    float lumA = Luminance709(a);
-    float lumB = Luminance709(b);
-    float lumC = Luminance709(c);
-    float lumD = Luminance709(d);
-    float lumE = Luminance709(e);
-    float lumF = Luminance709(f);
-    float lumG = Luminance709(g);
-    float lumH = Luminance709(h);
-    float lumI = Luminance709(i);
-
-    // Find local min and max in the cross neighborhood (b, d, e, f, h)
-    float minLum = min(lumE, min(min(lumB, lumD), min(lumF, lumH)));
-    float maxLum = max(lumE, max(max(lumB, lumD), max(lumF, lumH)));
-
-    // Also consider corners for a more robust estimate
-    float minLumFull = min(minLum, min(min(lumA, lumC), min(lumG, lumI)));
-    float maxLumFull = max(maxLum, max(max(lumA, lumC), max(lumG, lumI)));
-
-    // Compute the sharpening amount based on local contrast
-    // The key insight: when there's a lot of contrast headroom,
-    // we can sharpen more without clipping
-    float contrast = 1.0 - maxLum + minLum;
-
-    // Compute the CAS filter weight
-    // sharpness: 0.0 = no sharpening, 1.0 = maximum
-    // Extended range: peak goes from -0.1 (gentle) to -0.25 (strong)
-    float peak = -rcp(lerp(10.0, 4.0, saturate(sharpness)));
-    float w = contrast * peak;
-
-    // Apply the filter: negative lobe on cross neighbors, positive on center
-    // This is essentially an edge-preserving high-pass filter
-    float3 result = (w * (b + d + f + h) + e) / (4.0 * w + 1.0);
-
-    // Neighborhood clamping with slight overshoot allowance for stronger effect
-    float3 minColor = min(e, min(min(b, d), min(f, h)));
-    float3 maxColor = max(e, max(max(b, d), max(f, h)));
-    float3 range = maxColor - minColor;
-    result = clamp(result, minColor - range * 0.05, maxColor + range * 0.05);
-    result = max(result, 0.0);
-
-    return result;
+    // 余裕 = min(黒までの距離, 白までの距離) / 最大値。HDR (mx > 1) では 0 になる
+    float amp = saturate(min(mn, 1.0 - mx) / max(mx, 1e-5));
+    return sqrt(amp);
 }
 
-// Extended CAS with corner samples for higher quality
-float3 ApplyCASHighQuality(float3 a, float3 b, float3 c,
-                           float3 d, float3 e, float3 f,
-                           float3 g, float3 h, float3 i,
-                           float sharpness, float cornerWeight)
+// "better diagonals" 版。対角を含めた min/max を加算するため、白の基準が 2.0 になる
+float CASAmountDiagonal(float mnCross, float mxCross, float mnAll, float mxAll)
 {
-    float lumA = Luminance709(a);
-    float lumB = Luminance709(b);
-    float lumC = Luminance709(c);
-    float lumD = Luminance709(d);
-    float lumE = Luminance709(e);
-    float lumF = Luminance709(f);
-    float lumG = Luminance709(g);
-    float lumH = Luminance709(h);
-    float lumI = Luminance709(i);
+    float mn = mnCross + mnAll;
+    float mx = mxCross + mxAll;
+    float amp = saturate(min(mn, 2.0 - mx) / max(mx, 1e-5));
+    return sqrt(amp);
+}
 
-    // Full 3x3 neighborhood min/max
-    float minLum = min(lumE, min(min(min(lumA, lumB), min(lumC, lumD)),
-                                min(min(lumF, lumG), min(lumH, lumI))));
-    float maxLum = max(lumE, max(max(max(lumA, lumB), max(lumC, lumD)),
-                                max(max(lumF, lumG), max(lumH, lumI))));
+// フィルタの負ローブ重み。sharpness 0 → -1/8、1 → -1/5 (AMD の定義どおり)
+// 1 + 4w が 0.2 以上に保たれるため、ゼロ除算は発生しない
+float CASLobe(float amount, float sharpness)
+{
+    return -amount / lerp(8.0, 5.0, saturate(sharpness));
+}
 
-    float contrast = 1.0 - maxLum + minLum;
-    float peak = -rcp(lerp(10.0, 4.0, saturate(sharpness)));
-    float w = contrast * peak;
-    float wCorner = w * cornerWeight;
+// Realtime: 十字 5 タップ。戻り値はリニア信号上の差分 (出力 - 中心)
+PS_SIGNAL ApplyCAS(PS_SIGNAL b, PS_SIGNAL d, PS_SIGNAL e, PS_SIGNAL f, PS_SIGNAL h,
+                   float sharpness)
+{
+    float lb = PSLuma(b), ld = PSLuma(d), le = PSLuma(e), lf = PSLuma(f), lh = PSLuma(h);
+    float mn = min(le, min(min(lb, ld), min(lf, lh)));
+    float mx = max(le, max(max(lb, ld), max(lf, lh)));
 
-    // Apply with corner contributions
-    float3 result = (w * (b + d + f + h) + wCorner * (a + c + g + i) + e)
-                  / (4.0 * w + 4.0 * wCorner + 1.0);
+    float w = CASLobe(CASAmount(mn, mx), sharpness);
 
-    // Full neighborhood clamping with slight overshoot for stronger effect
-    float3 minColor = min(e, min(min(min(a, b), min(c, d)), min(min(f, g), min(h, i))));
-    float3 maxColor = max(e, max(max(max(a, b), max(c, d)), max(max(f, g), max(h, i))));
-    float3 range = maxColor - minColor;
-    result = clamp(result, minColor - range * 0.05, maxColor + range * 0.05);
-    result = max(result, 0.0);
+    // (w * (b+d+f+h) + e) / (1 + 4w) - e を整理した形
+    return w * ((b + d + f + h) - 4.0 * e) / (1.0 + 4.0 * w);
+}
 
-    return result;
+// High: 3x3 の 9 タップ。対角を min/max 推定とフィルタ核の両方に使う
+// cornerWeight は負ローブのうち対角へ配分する割合 (0 = 十字のみ)。
+// 合計の負ローブ量は変えないため、分母は Realtime と同じ 1 + 4w になる
+PS_SIGNAL ApplyCASHighQuality(PS_SIGNAL a, PS_SIGNAL b, PS_SIGNAL c,
+                              PS_SIGNAL d, PS_SIGNAL e, PS_SIGNAL f,
+                              PS_SIGNAL g, PS_SIGNAL h, PS_SIGNAL i,
+                              float sharpness, float cornerWeight)
+{
+    float la = PSLuma(a), lb = PSLuma(b), lc = PSLuma(c);
+    float ld = PSLuma(d), le = PSLuma(e), lf = PSLuma(f);
+    float lg = PSLuma(g), lh = PSLuma(h), li = PSLuma(i);
+
+    float mnCross = min(le, min(min(lb, ld), min(lf, lh)));
+    float mxCross = max(le, max(max(lb, ld), max(lf, lh)));
+    float mnAll = min(mnCross, min(min(la, lc), min(lg, li)));
+    float mxAll = max(mxCross, max(max(la, lc), max(lg, li)));
+
+    float w = CASLobe(CASAmountDiagonal(mnCross, mxCross, mnAll, mxAll), sharpness);
+
+    float wCross = w / (1.0 + cornerWeight);
+    float wDiag = wCross * cornerWeight;
+
+    PS_SIGNAL hpCross = (b + d + f + h) - 4.0 * e;
+    PS_SIGNAL hpDiag = (a + c + g + i) - 4.0 * e;
+    return (wCross * hpCross + wDiag * hpDiag) / (1.0 + 4.0 * w);
 }
 
 #endif // PROSHARPEN_CAS_INCLUDED

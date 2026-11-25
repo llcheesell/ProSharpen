@@ -25,6 +25,11 @@
       "name": "com.unity.render-pipelines.core",
       "expression": "17.0.0",
       "define": "PROSHARPEN_UNITY6"
+    },
+    {
+      "name": "com.unity.render-pipelines.universal",
+      "expression": "17.3.0",
+      "define": "PROSHARPEN_URP_17_3"
     }
   ],
   "noEngineReferences": false
